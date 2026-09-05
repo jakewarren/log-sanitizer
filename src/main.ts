@@ -440,6 +440,7 @@ async function sanitize(): Promise<void> {
   const preflight: ActivePreflight = { kind, file: kind === 'file' ? selectedFile : null };
   activePreflight = preflight;
   setBusy();
+  let textInputBytes = 0;
   if (kind === 'file') {
     const file = preflight.file!;
     const sizeError = validateInputSize(file.size, 'file', canStreamToDisk());
@@ -492,14 +493,15 @@ async function sanitize(): Promise<void> {
       showError('Paste or type text before sanitizing.');
       return;
     }
-    const bytes = new TextEncoder().encode(pasteInput.value).byteLength;
-    const sizeError = validateInputSize(bytes, 'text', false);
+    const encoded = new TextEncoder().encode(pasteInput.value);
+    textInputBytes = encoded.byteLength;
+    const sizeError = validateInputSize(textInputBytes, 'text', false);
     if (sizeError) {
       finishPreflight(preflight);
       showError('Pasted text is larger than the 50 MiB limit.');
       return;
     }
-    if (isProbablyBinary(new TextEncoder().encode(pasteInput.value).slice(0, 64 * 1024))) {
+    if (isProbablyBinary(encoded.slice(0, 64 * 1024))) {
       finishPreflight(preflight);
       showError('This text contains binary control data. Paste UTF-8 text instead.');
       return;
@@ -509,7 +511,7 @@ async function sanitize(): Promise<void> {
   }
   if (!isCurrentPreflight(preflight)) return;
   activeInputKind = kind;
-  activeInputBytes = kind === 'file' ? preflight.file!.size : new TextEncoder().encode(pasteInput.value).byteLength;
+  activeInputBytes = kind === 'file' ? preflight.file!.size : textInputBytes;
   clearResult();
   activePreflight = undefined;
   setStatus('Starting local sanitization…');

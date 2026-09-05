@@ -144,6 +144,48 @@ describe('streaming sanitizer', () => {
     }
   });
 
+  it('clamps a long ASCII single-line preview on both sides', async () => {
+    const request: StartMessage = {
+      type: 'start',
+      key: '11'.repeat(32),
+      rules: ['ips'],
+      aggressive: false,
+      input: { kind: 'text', text: 'a'.repeat(300_000), outputName: 'sanitized.txt' },
+      destination: { kind: 'memory' },
+    };
+    const result = await runSanitization(request, new AbortController().signal, () => undefined);
+    const utf8 = new TextEncoder();
+    const decoder = new TextDecoder('utf-8', { fatal: true });
+    if (result.kind !== 'text') throw new Error('Expected text result');
+    for (const side of [result.report.preview.before, result.report.preview.after]) {
+      const text = side.map((segment) => segment.text).join('');
+      expect(utf8.encode(text).byteLength).toBeLessThanOrEqual(262_144);
+      expect(decoder.decode(utf8.encode(text))).toBe(text);
+    }
+  });
+
+  it('preserves unchanged and changed flags while clamping mixed preview segments', async () => {
+    const request: StartMessage = {
+      type: 'start',
+      key: '11'.repeat(32),
+      rules: ['ips'],
+      aggressive: false,
+      input: { kind: 'text', text: `from 10.0.0.7 ${'a'.repeat(300_000)}`, outputName: 'sanitized.txt' },
+      destination: { kind: 'memory' },
+    };
+    const result = await runSanitization(request, new AbortController().signal, () => undefined);
+    const utf8 = new TextEncoder();
+    const decoder = new TextDecoder('utf-8', { fatal: true });
+    if (result.kind !== 'text') throw new Error('Expected text result');
+    for (const side of [result.report.preview.before, result.report.preview.after]) {
+      const text = side.map((segment) => segment.text).join('');
+      expect(utf8.encode(text).byteLength).toBeLessThanOrEqual(262_144);
+      expect(decoder.decode(utf8.encode(text))).toBe(text);
+      expect(side.some((segment) => !segment.changed)).toBe(true);
+      expect(side.some((segment) => segment.changed)).toBe(true);
+    }
+  });
+
   it('streams to a file-like handle and closes only on success', async () => {
     const chunks: string[] = [];
     let closed = false;
@@ -517,6 +559,32 @@ describe('DOM run lifecycle', () => {
     }
   });
 
+  it('encodes pasted input once for size, binary sampling, and run bytes', async () => {
+    const NativeTextEncoder = globalThis.TextEncoder;
+    let fullEncodes = 0;
+    class CountingTextEncoder extends NativeTextEncoder {
+      override encode(input = ''): Uint8Array {
+        if (input === 'from 10.0.0.7') fullEncodes += 1;
+        return super.encode(input);
+      }
+    }
+    vi.stubGlobal('TextEncoder', CountingTextEncoder);
+    try {
+      const modeText = appDocument.getElementById('mode-text') as HTMLInputElement;
+      modeText.checked = true;
+      modeText.dispatchEvent(new appWindow.Event('change', { bubbles: true }));
+      const paste = appDocument.getElementById('paste-input') as HTMLTextAreaElement;
+      paste.value = 'from 10.0.0.7';
+      paste.dispatchEvent(new appWindow.Event('input', { bubbles: true }));
+      fullEncodes = 0;
+      click('sanitize');
+      await settle();
+      expect(fullEncodes).toBe(1);
+    } finally {
+      vi.stubGlobal('TextEncoder', NativeTextEncoder);
+    }
+  });
+
   it('retires delayed file preflight when Clear session is activated', async () => {
     let resolvePicker!: (handle: WritableFileHandleLike) => void;
     const picker = vi.fn(() => new Promise<WritableFileHandleLike>((resolve) => { resolvePicker = resolve; }));
@@ -650,6 +718,7 @@ describe('DOM run lifecycle', () => {
     appWindow.confirm = () => false;
     paste.value = 'replacement';
     paste.dispatchEvent(new appWindow.Event('input', { bubbles: true }));
+    expect(paste.value).toBe('original');
     expect((appDocument.getElementById('results') as HTMLElement).hidden).toBe(false);
     expect((appDocument.getElementById('copy-result') as HTMLButtonElement).hidden).toBe(false);
     expect(TestWorker.instances).toHaveLength(1);
