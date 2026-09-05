@@ -6,13 +6,13 @@
 
 **Architecture:** A vanilla TypeScript/Vite page owns the accessible UI and tab-scoped key. One Web Worker runs `@socprime/logtotal-sanitizer` against a strict UTF-8 source, writing either to a browser file handle or a capped in-memory result.
 
-**Tech Stack:** Node.js 22, npm, TypeScript 7.0.2, Vite 8.2.2, Vitest 5.0.0, `@socprime/logtotal-sanitizer` 0.1.0-beta.0, native Web Workers, File/Blob/Clipboard/sessionStorage APIs, GitHub Pages.
+**Tech Stack:** Bun 1.4.0, TypeScript 7.0.2, Vite 8.2.2, Vitest 5.0.0, `@socprime/logtotal-sanitizer` 0.1.0-beta.0, native Web Workers, File/Blob/Clipboard/sessionStorage APIs, GitHub Pages.
 
 **Spec:** `docs/superpowers/specs/2026-09-05-log-sanitizer-design.md`
 
 ## Global Constraints
 
-- Keep `@socprime/logtotal-sanitizer` pinned exactly to `0.1.0-beta.0`; commit `package-lock.json`.
+- Use Bun for package management and scripts; keep `@socprime/logtotal-sanitizer` pinned exactly to `0.1.0-beta.0` and commit `bun.lock`.
 - Keep all runtime assets in the built site: no backend, telemetry, analytics, remote fonts, CDN imports, or application-initiated network calls.
 - Process one input at a time; accept strict UTF-8 with an optional UTF-8 BOM.
 - Use all built-in rules by default, preserve the library's rule priority, and default aggressive mode off.
@@ -26,7 +26,7 @@
 ## File Structure
 
 - `.gitignore` — ignore dependencies, build output, and visual-companion state.
-- `package.json` / `package-lock.json` — exact dependency versions and three scripts: dev, test, build.
+- `package.json` / `bun.lock` — exact dependency versions and three scripts: dev, test, build.
 - `tsconfig.json` — strict browser TypeScript configuration with no emitted type-check output.
 - `vite.config.ts` — static build with relative asset URLs for any GitHub Pages project path.
 - `index.html` — semantic single-screen shell and restrictive CSP.
@@ -47,7 +47,7 @@
 **Files:**
 - Create: `.gitignore`
 - Create: `package.json`
-- Create: `package-lock.json` via `npm install`
+- Create: `bun.lock` via `bun install`
 - Create: `tsconfig.json`
 - Create: `vite.config.ts`
 - Create: `tests/app.test.ts`
@@ -76,8 +76,9 @@ Create `package.json`:
   "version": "0.0.0",
   "private": true,
   "type": "module",
+  "packageManager": "bun@1.4.0",
   "engines": {
-    "node": ">=20.19.0"
+    "bun": ">=1.4.0"
   },
   "scripts": {
     "dev": "vite",
@@ -126,11 +127,10 @@ export default defineConfig({ base: '/' });
 Run:
 
 ```bash
-npm install
-git branch -m main
+bun install
 ```
 
-Expected: npm creates a lockfile with the exact versions above, and the current branch becomes `main`.
+Expected: Bun creates `bun.lock` with the exact versions above.
 
 - [ ] **Step 2: Write the failing policy tests**
 
@@ -220,7 +220,7 @@ describe('browser policy', () => {
 Run:
 
 ```bash
-npm test
+bun run test
 ```
 
 Expected: FAIL because `src/policy.ts` does not exist.
@@ -351,8 +351,8 @@ export function replaceSessionKey(storage?: StorageLike): SessionKeyState {
 Run:
 
 ```bash
-npm test
-npx tsc --noEmit
+bun run test
+bunx tsc --noEmit
 ```
 
 Expected: tests PASS and TypeScript reports no errors. The production build begins in Task 3 after the page entry exists.
@@ -360,7 +360,7 @@ Expected: tests PASS and TypeScript reports no errors. The production build begi
 - [ ] **Step 6: Commit Task 1**
 
 ```bash
-git add .gitignore package.json package-lock.json tsconfig.json vite.config.ts src/policy.ts tests/app.test.ts
+git add .gitignore package.json bun.lock tsconfig.json vite.config.ts src/policy.ts tests/app.test.ts
 git commit -m "chore: bootstrap browser sanitizer"
 ```
 
@@ -481,7 +481,7 @@ describe('streaming sanitizer', () => {
 Run:
 
 ```bash
-npm test
+bun run test
 ```
 
 Expected: FAIL because `src/sanitization.ts` and `src/protocol.ts` do not exist.
@@ -796,8 +796,8 @@ scope.addEventListener('message', (event) => {
 Run:
 
 ```bash
-npm test
-npx tsc --noEmit
+bun run test
+bunx tsc --noEmit
 ```
 
 Expected: all tests PASS and TypeScript reports no errors. Fix types without weakening `strict` or adding `skipLibCheck`.
@@ -866,7 +866,7 @@ Vitest transpiles this test; keep tests outside `tsconfig.json` so no additional
 Run:
 
 ```bash
-npm test
+bun run test
 ```
 
 Expected: FAIL with an `ENOENT` error for `index.html`.
@@ -1202,8 +1202,8 @@ Do not log source text, worker payloads, errors containing input, keys, reports,
 Run:
 
 ```bash
-npm test
-npm run build
+bun run test
+bun run build
 ```
 
 Expected: tests PASS; Vite produces `dist/index.html`, bundled CSS, the main module, and the worker module.
@@ -1213,7 +1213,7 @@ Expected: tests PASS; Vite produces `dist/index.html`, bundled CSS, the main mod
 Run:
 
 ```bash
-npm run dev -- --host 127.0.0.1
+bun run dev -- --host 127.0.0.1
 ```
 
 In a desktop browser, verify upload/paste switching, rule toggles, a small sample containing an IP and bearer token, progress, preview highlighting, Copy, Download, Clear session, keyboard focus, and responsive stacking below 720 px. The CSP intentionally blocks Vite's hot-reload WebSocket; manually refresh while developing.
@@ -1262,7 +1262,7 @@ describe('deployment configuration', () => {
 Run:
 
 ```bash
-npm test
+bun run test
 ```
 
 Expected: FAIL because the initial Vite base is `/`.
@@ -1306,13 +1306,12 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
-      - uses: actions/setup-node@v7
+      - uses: oven-sh/setup-bun@v2
         with:
-          node-version: 22
-          cache: npm
-      - run: npm ci
-      - run: npm test
-      - run: npm run build
+          bun-version: 1.4.0
+      - run: bun ci
+      - run: bun run test
+      - run: bun run build
       - uses: actions/configure-pages@v6
       - uses: actions/upload-pages-artifact@v5
         with:
@@ -1348,13 +1347,13 @@ The app detects capabilities rather than browser names. Only strict UTF-8, with 
 
 ## Local development
 
-Requires Node.js 20.19 or newer.
+Requires Bun 1.4.0 or newer.
 
 ```bash
-npm ci
-npm test
-npm run dev
-npm run build
+bun ci
+bun run test
+bun run dev
+bun run build
 ```
 
 The Content Security Policy blocks Vite's hot-reload WebSocket. Refresh manually during local development.
@@ -1377,8 +1376,8 @@ This application uses `@socprime/logtotal-sanitizer` under the Apache-2.0 licens
 Run:
 
 ```bash
-npm test
-npm run build
+bun run test
+bun run build
 rg -n 'fetch\(|XMLHttpRequest|sendBeacon|WebSocket' src
 rg -n '="/assets/' dist/index.html
 rg -n '="\./assets/' dist/index.html
@@ -1400,9 +1399,9 @@ git commit -m "ci: deploy sanitizer to GitHub Pages"
 - [ ] Run the clean-install check from a fresh dependency tree:
 
 ```bash
-npm ci
-npm test
-npm run build
+bun ci
+bun run test
+bun run build
 git status --short
 ```
 
@@ -1418,7 +1417,7 @@ node -e 'const fs=require("fs");const path=process.argv[1];const limit=Number(pr
 - [ ] Serve on localhost and perform the browser matrix:
 
 ```bash
-npm run dev -- --host 127.0.0.1
+bun run dev -- --host 127.0.0.1
 ```
 
 Chrome and Edge must advertise the 250 MiB tier, sanitize `/private/tmp/log-sanitizer-250m.log` to a newly chosen destination, keep the interface responsive, show a bounded preview, and produce a valid sanitized file. Firefox and Safari must advertise the 50 MiB tier, reject the 250 MiB fixture before processing, and successfully sanitize `/private/tmp/log-sanitizer-50m.log` through the Blob download path.
@@ -1436,8 +1435,8 @@ If either direct-to-disk browser fails at 250 MiB, repeat with 200 MiB, 150 MiB,
 - [ ] Run the final evidence check:
 
 ```bash
-npm test
-npm run build
+bun run test
+bun run build
 git status --short --branch
 git log --oneline --decorate -5
 ```
