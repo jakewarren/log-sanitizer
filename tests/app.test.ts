@@ -386,6 +386,25 @@ describe('DOM run lifecycle', () => {
     expect((TestWorker.instances[1].messages[0] as StartMessage).destination).toEqual({ kind: 'memory' });
   });
 
+  it('ignores late messages from the retired disk worker during memory retry', async () => {
+    setFile();
+    click('sanitize');
+    await settle();
+    const first = TestWorker.instances[0];
+    first.emit({ type: 'error', code: 'disk-unavailable', message: 'unavailable' });
+    await settle();
+    const retry = TestWorker.instances[1];
+    first.emit({ type: 'progress', bytesRead: 1, totalBytes: 1 });
+    first.emit(complete('disk'));
+    first.emit({ type: 'error', code: 'failed', message: 'late failure' });
+    await settle();
+    expect((appDocument.getElementById('results') as HTMLElement).hidden).toBe(true);
+    expect((appDocument.getElementById('status') as HTMLElement).textContent).toContain('retrying');
+    retry.emit(complete());
+    await settle();
+    expect((appDocument.getElementById('results') as HTMLElement).hidden).toBe(false);
+  });
+
   it('ignores a late completion from a worker retired by Clear session', async () => {
     setFile();
     click('sanitize');
@@ -398,19 +417,51 @@ describe('DOM run lifecycle', () => {
     expect((appDocument.getElementById('status') as HTMLElement).textContent).toContain('Session cleared');
   });
 
-  it('times out cancellation and allows a subsequent run with Cancel restored', async () => {
-    setFile();
-    click('sanitize');
-    await settle();
-    click('cancel');
-    expect((appDocument.getElementById('status') as HTMLElement).textContent).toBe('Cancelling…');
-    await new Promise((resolve) => setTimeout(resolve, 1600));
-    const cancel = appDocument.getElementById('cancel') as HTMLButtonElement;
-    expect(cancel.hidden).toBe(true);
-    expect(cancel.disabled).toBe(false);
-    click('sanitize');
-    await settle();
-    expect(TestWorker.instances).toHaveLength(2);
-    expect((appDocument.getElementById('cancel') as HTMLButtonElement).hidden).toBe(false);
+  it('keeps cancellation active through 1,499 ms and retires at 1,500 ms', async () => {
+    vi.useFakeTimers();
+    const timerWindow = appWindow as unknown as { setTimeout: typeof setTimeout; clearTimeout: typeof clearTimeout };
+    timerWindow.setTimeout = globalThis.setTimeout;
+    timerWindow.clearTimeout = globalThis.clearTimeout;
+    try {
+      setFile();
+      click('sanitize');
+      await settle();
+      click('cancel');
+      expect((appDocument.getElementById('status') as HTMLElement).textContent).toBe('Cancelling…');
+      vi.advanceTimersByTime(1499);
+      expect((appDocument.getElementById('cancel') as HTMLButtonElement).hidden).toBe(false);
+      expect((appDocument.getElementById('cancel') as HTMLButtonElement).disabled).toBe(true);
+      vi.advanceTimersByTime(1);
+      const cancel = appDocument.getElementById('cancel') as HTMLButtonElement;
+      expect(cancel.hidden).toBe(true);
+      expect(cancel.disabled).toBe(false);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('clears an acknowledged cancellation timer before the next run', async () => {
+    vi.useFakeTimers();
+    const timerWindow = appWindow as unknown as { setTimeout: typeof setTimeout; clearTimeout: typeof clearTimeout };
+    timerWindow.setTimeout = globalThis.setTimeout;
+    timerWindow.clearTimeout = globalThis.clearTimeout;
+    try {
+      setFile();
+      click('sanitize');
+      await settle();
+      const first = TestWorker.instances[0];
+      click('cancel');
+      first.emit({ type: 'cancelled' });
+      await settle();
+      expect(vi.getTimerCount()).toBe(0);
+      vi.advanceTimersByTime(5000);
+      setFile();
+      click('sanitize');
+      await settle();
+      expect(TestWorker.instances).toHaveLength(2);
+      expect((appDocument.getElementById('cancel') as HTMLButtonElement).hidden).toBe(false);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
