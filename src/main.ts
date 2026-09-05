@@ -1,4 +1,4 @@
-import { CANCEL_TIMEOUT_MS, PREVIEW_BYTES, RULES, getInputLimit, getOrCreateSessionKey, isProbablyBinary, isCurrentRun, limitPreviewSegments, orderRuleIds, outputFileName, replaceSessionKey, shouldRetryInMemory, validateInputSize, type InputKind, type SessionKeyState } from './policy';
+import { PREVIEW_BYTES, RULES, getInputLimit, getOrCreateSessionKey, isProbablyBinary, limitPreviewSegments, orderRuleIds, outputFileName, replaceSessionKey, validateInputSize, type InputKind, type SessionKeyState } from './policy';
 import type { CompleteResult, StartMessage, WorkerResponse, WritableFileHandleLike } from './protocol';
 
 type PickerOptions = { suggestedName?: string; types?: Array<{ description: string; accept: Record<string, string[]> }> };
@@ -34,6 +34,7 @@ const afterPreview = $('after-preview');
 const previewNote = $('preview-note');
 const copyButton = $('copy-result') as HTMLButtonElement;
 const downloadButton = $('download-result') as HTMLButtonElement;
+const CANCEL_TIMEOUT_MS = 1500;
 const modeControls = [modeFile, modeText];
 const inputControls = [fileInput, pasteInput, aggressive];
 
@@ -54,6 +55,16 @@ interface ActiveRun {
 }
 
 let activeRun: ActiveRun | undefined;
+
+type WorkerErrorCode = Extract<WorkerResponse, { type: 'error' }>['code'];
+
+function shouldRetryInMemory(code: WorkerErrorCode, inputBytes: number): boolean {
+  return code === 'disk-unavailable' && inputBytes <= 50 * 1024 * 1024;
+}
+
+function isCurrentRun(runId: number, activeRunId: number | undefined): boolean {
+  return activeRunId === runId;
+}
 
 function safeSessionStorage(): Storage | undefined {
   try {

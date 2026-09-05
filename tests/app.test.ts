@@ -1,12 +1,12 @@
-import { describe, expect, it } from 'vitest';
+import { beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { readFile } from 'node:fs/promises';
+import { Window } from 'happy-dom';
 import { sanitizeText } from '@socprime/logtotal-sanitizer';
 import { strictUtf8Source, runSanitization } from '../src/sanitization';
 import type { StartMessage, WritableFileHandleLike } from '../src/protocol';
 import {
   DIRECT_LIMIT_BYTES,
   MEMORY_LIMIT_BYTES,
-  CANCEL_TIMEOUT_MS,
   getInputLimit,
   getOrCreateSessionKey,
   isProbablyBinary,
@@ -15,8 +15,6 @@ import {
   outputFileName,
   replaceSessionKey,
   validateInputSize,
-  isCurrentRun,
-  shouldRetryInMemory,
 } from '../src/policy';
 
 function memoryStorage() {
@@ -29,15 +27,6 @@ function memoryStorage() {
 }
 
 describe('browser policy', () => {
-  it('allows only safe disk-error fallback and isolates retired runs', () => {
-    expect(shouldRetryInMemory('disk-unavailable', MEMORY_LIMIT_BYTES)).toBe(true);
-    expect(shouldRetryInMemory('disk-unavailable', MEMORY_LIMIT_BYTES + 1)).toBe(false);
-    expect(shouldRetryInMemory('failed', 1)).toBe(false);
-    expect(CANCEL_TIMEOUT_MS).toBe(1500);
-    expect(isCurrentRun(3, 3)).toBe(true);
-    expect(isCurrentRun(3, 4)).toBe(false);
-  });
-
   it('uses capability-dependent limits', () => {
     expect(getInputLimit('file', true)).toBe(DIRECT_LIMIT_BYTES);
     expect(getInputLimit('file', false)).toBe(MEMORY_LIMIT_BYTES);
@@ -290,5 +279,138 @@ describe('page shell', () => {
     ]) {
       expect(html).toContain(`id="${id}"`);
     }
+  });
+});
+
+describe('DOM run lifecycle', () => {
+  class TestWorker {
+    static instances: TestWorker[] = [];
+    static postFailures = 0;
+    readonly messages: unknown[] = [];
+    terminated = false;
+    private readonly listeners = new Map<string, Array<(event: unknown) => void>>();
+
+    constructor() {
+      TestWorker.instances.push(this);
+    }
+
+    addEventListener(type: string, listener: (event: unknown) => void): void {
+      this.listeners.set(type, [...(this.listeners.get(type) ?? []), listener]);
+    }
+
+    postMessage(message: unknown): void {
+      this.messages.push(message);
+      if (TestWorker.postFailures > 0) {
+        TestWorker.postFailures -= 1;
+        throw new DOMException('Cannot clone', 'DataCloneError');
+      }
+    }
+
+    terminate(): void {
+      this.terminated = true;
+    }
+
+    emit(data: WorkerResponse): void {
+      for (const listener of this.listeners.get('message') ?? []) listener({ data });
+    }
+  }
+
+  let appWindow: Window;
+  let appDocument: Document;
+  const complete = (kind: 'blob' | 'disk' = 'blob'): WorkerResponse => ({
+    type: 'complete',
+    result: kind === 'disk'
+      ? { kind, report: { counts: {}, totalMatches: 0, lineCount: 1, preview: { before: [], after: [] } } }
+      : { kind, blob: new Blob(['done']), fileName: 'sample.sanitized.log', report: { counts: {}, totalMatches: 0, lineCount: 1, preview: { before: [], after: [] } } },
+  });
+
+  async function settle(): Promise<void> {
+    for (let index = 0; index < 5; index += 1) await Promise.resolve();
+  }
+
+  function click(id: string): void {
+    appDocument.getElementById(id)?.dispatchEvent(new appWindow.Event('click', { bubbles: true }));
+  }
+
+  function setFile(): void {
+    const input = appDocument.getElementById('file-input') as HTMLInputElement;
+    Object.defineProperty(input, 'files', { configurable: true, value: [new appWindow.File(['from 10.0.0.7'], 'sample.log')] });
+    input.dispatchEvent(new appWindow.Event('change', { bubbles: true }));
+  }
+
+  beforeAll(async () => {
+    appWindow = new Window({ url: 'http://localhost/' });
+    const html = await readFile(new URL('../index.html', import.meta.url), 'utf8');
+    appDocument = appWindow.document;
+    appDocument.body.innerHTML = html.slice(html.indexOf('<body>') + 6, html.indexOf('</body>'));
+    vi.stubGlobal('window', appWindow);
+    vi.stubGlobal('document', appDocument);
+    vi.stubGlobal('Worker', TestWorker);
+    vi.stubGlobal('DOMException', appWindow.DOMException);
+    vi.stubGlobal('Blob', appWindow.Blob);
+    vi.stubGlobal('File', appWindow.File);
+    Object.defineProperty(appWindow, 'showSaveFilePicker', { configurable: true, value: vi.fn(async () => ({ createWritable: vi.fn() })) });
+    appWindow.confirm = () => true;
+    await import('../src/main');
+  });
+
+  beforeEach(() => {
+    TestWorker.instances.length = 0;
+    TestWorker.postFailures = 0;
+    (appDocument.getElementById('paste-input') as HTMLTextAreaElement).value = '';
+    click('clear-session');
+  });
+
+  it('retries a DataCloneError disk request through memory for a small file', async () => {
+    TestWorker.postFailures = 1;
+    setFile();
+    click('sanitize');
+    await settle();
+    expect(TestWorker.instances).toHaveLength(2);
+    const retry = TestWorker.instances[1];
+    expect((retry.messages[0] as StartMessage).destination).toEqual({ kind: 'memory' });
+    retry.emit(complete());
+    await settle();
+    expect((appDocument.getElementById('results') as HTMLElement).hidden).toBe(false);
+  });
+
+  it('retries a worker disk-unavailable response through memory', async () => {
+    setFile();
+    click('sanitize');
+    await settle();
+    const first = TestWorker.instances[0];
+    expect((first.messages[0] as StartMessage).destination.kind).toBe('disk');
+    first.emit({ type: 'error', code: 'disk-unavailable', message: 'unavailable' });
+    await settle();
+    expect(TestWorker.instances).toHaveLength(2);
+    expect((TestWorker.instances[1].messages[0] as StartMessage).destination).toEqual({ kind: 'memory' });
+  });
+
+  it('ignores a late completion from a worker retired by Clear session', async () => {
+    setFile();
+    click('sanitize');
+    await settle();
+    const first = TestWorker.instances[0];
+    click('clear-session');
+    first.emit(complete());
+    await settle();
+    expect((appDocument.getElementById('results') as HTMLElement).hidden).toBe(true);
+    expect((appDocument.getElementById('status') as HTMLElement).textContent).toContain('Session cleared');
+  });
+
+  it('times out cancellation and allows a subsequent run with Cancel restored', async () => {
+    setFile();
+    click('sanitize');
+    await settle();
+    click('cancel');
+    expect((appDocument.getElementById('status') as HTMLElement).textContent).toBe('Cancelling…');
+    await new Promise((resolve) => setTimeout(resolve, 1600));
+    const cancel = appDocument.getElementById('cancel') as HTMLButtonElement;
+    expect(cancel.hidden).toBe(true);
+    expect(cancel.disabled).toBe(false);
+    click('sanitize');
+    await settle();
+    expect(TestWorker.instances).toHaveLength(2);
+    expect((appDocument.getElementById('cancel') as HTMLButtonElement).hidden).toBe(false);
   });
 });

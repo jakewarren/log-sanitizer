@@ -11,7 +11,6 @@ export const MEMORY_LIMIT_BYTES = 50 * 1024 * 1024;
 export const PREVIEW_BYTES = 256 * 1024;
 export const PREVIEW_LINES = 200;
 export const SESSION_KEY = 'log-sanitizer:hmac-key';
-export const CANCEL_TIMEOUT_MS = 1500;
 
 export const RULES = builtinRules.map(({ id, label, description }) => ({
   id: id as BuiltinRuleId,
@@ -40,17 +39,6 @@ export function validateInputSize(
   if (size <= limit) return null;
   const label = limit === DIRECT_LIMIT_BYTES ? '250 MiB' : '50 MiB';
   return `This input is larger than the ${label} limit for the available output method.`;
-}
-
-export function shouldRetryInMemory(
-  code: 'invalid-utf8' | 'disk-unavailable' | 'quota' | 'failed',
-  inputBytes: number,
-): boolean {
-  return code === 'disk-unavailable' && inputBytes <= MEMORY_LIMIT_BYTES;
-}
-
-export function isCurrentRun(runId: number, activeRunId: number | undefined): boolean {
-  return activeRunId === runId;
 }
 
 export function outputFileName(name: string): string {
