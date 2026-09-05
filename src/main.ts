@@ -1,4 +1,4 @@
-import { RULES, getInputLimit, getOrCreateSessionKey, isProbablyBinary, limitPreviewSegments, orderRuleIds, outputFileName, replaceSessionKey, validateInputSize, type InputKind, type SessionKeyState } from './policy';
+import { CANCEL_TIMEOUT_MS, PREVIEW_BYTES, RULES, getInputLimit, getOrCreateSessionKey, isProbablyBinary, isCurrentRun, limitPreviewSegments, orderRuleIds, outputFileName, replaceSessionKey, shouldRetryInMemory, validateInputSize, type InputKind, type SessionKeyState } from './policy';
 import type { CompleteResult, StartMessage, WorkerResponse, WritableFileHandleLike } from './protocol';
 
 type PickerOptions = { suggestedName?: string; types?: Array<{ description: string; accept: Record<string, string[]> }> };
@@ -39,10 +39,21 @@ const inputControls = [fileInput, pasteInput, aggressive];
 
 let selectedFile: File | null = null;
 let session: SessionKeyState;
-let worker: Worker | undefined;
 let currentResult: CompleteResult | undefined;
 let activeInputKind: InputKind | undefined;
-let cancelTimer: number | undefined;
+let activeInputBytes = 0;
+let runSequence = 0;
+
+interface ActiveRun {
+  id: number;
+  request: StartMessage;
+  inputBytes: number;
+  worker?: Worker;
+  cancelTimer?: number;
+  cancelRequested: boolean;
+}
+
+let activeRun: ActiveRun | undefined;
 
 function safeSessionStorage(): Storage | undefined {
   try {
@@ -60,8 +71,12 @@ const storage = safeSessionStorage();
 session = getOrCreateSessionKey(storage);
 
 function canStreamToDisk(): boolean {
-  return typeof (window as PickerWindow).showSaveFilePicker === 'function';
+  return showSaveFilePicker !== undefined;
 }
+
+const showSaveFilePicker = typeof (window as PickerWindow).showSaveFilePicker === 'function'
+  ? (window as PickerWindow).showSaveFilePicker!.bind(window)
+  : undefined;
 
 function setStatus(message: string): void {
   status.textContent = message;
@@ -104,16 +119,11 @@ function hasResult(): boolean {
   return currentResult !== undefined;
 }
 
-function confirmReplacingResult(): boolean {
-  return !hasResult() || window.confirm('Replace the current sanitized result? It has not been exported yet.');
-}
-
 function setFile(file: File | undefined): void {
   if (!file) return;
   selectedFile = file;
   pasteInput.value = '';
   fileName.textContent = `${file.name} (${formatBytes(file.size)}). Suggested output: ${outputFileName(file.name)} — keep the output name distinct from the source.`;
-  clearResult();
   clearError();
   setStatus('File ready to sanitize locally.');
 }
@@ -153,6 +163,10 @@ function updateToggleLabel(): void {
   toggleRulesButton.textContent = inputs.every((input) => input.checked) ? 'Clear all' : 'Select all';
 }
 
+function setRuleInputsDisabled(disabled: boolean): void {
+  ruleInputs().forEach((input) => { input.disabled = disabled; });
+}
+
 function renderResult(result: CompleteResult): void {
   currentResult = result;
   const report = result.report;
@@ -167,15 +181,17 @@ function renderResult(result: CompleteResult): void {
   const afterLimited = limitPreviewSegments(report.preview.after);
   renderSegments(beforePreview, beforeLimited.segments);
   renderSegments(afterPreview, afterLimited.segments);
-  previewNote.textContent = beforeLimited.truncated || afterLimited.truncated
-    ? 'Preview limited to the first 200 lines.'
+  previewNote.textContent = activeInputBytes > PREVIEW_BYTES || beforeLimited.truncated || afterLimited.truncated
+    ? 'Preview limited to the first 256 KiB and 200 lines.'
     : 'Preview shows the bounded sample returned by the sanitizer.';
   const isText = activeInputKind === 'text';
   copyButton.hidden = !isText;
   downloadButton.hidden = result.kind === 'disk';
   results.hidden = false;
   resultHeading.focus();
-  setStatus('Sanitization complete.');
+  setStatus(result.kind === 'disk'
+    ? 'Sanitization complete. The chosen output file was saved.'
+    : 'Sanitization complete.');
 }
 
 function renderSegments(target: HTMLElement, segments: Array<{ text: string; changed: boolean }>): void {
@@ -197,75 +213,160 @@ async function sampleIsBinary(file: File): Promise<boolean> {
 }
 
 async function chooseDestination(name: string): Promise<WritableFileHandleLike | undefined> {
-  const picker = (window as PickerWindow).showSaveFilePicker;
-  if (!picker) return undefined;
-  return picker({
+  if (!showSaveFilePicker) return undefined;
+  return showSaveFilePicker({
     suggestedName: name,
     types: [{ description: 'Text file', accept: { 'text/plain': ['.txt', '.log', '.json', '.csv'] } }],
   });
 }
 
-function sendStart(message: StartMessage): void {
-  const instance = new Worker(new URL('./sanitize.worker.ts', import.meta.url), { type: 'module' });
-  worker = instance;
+function isDataCloneError(reason: unknown): boolean {
+  return reason instanceof DOMException && reason.name === 'DataCloneError';
+}
+
+function setIdle(): void {
+  sanitizeButton.disabled = false;
+  cancelButton.hidden = true;
+  cancelButton.disabled = false;
+  modeControls.forEach((control) => { control.disabled = false; });
+  inputControls.forEach((control) => { control.disabled = false; });
+  setRuleInputsDisabled(false);
+  toggleRulesButton.disabled = false;
+  progressWrapper.hidden = true;
+}
+
+function failRun(run: ActiveRun, message: string): void {
+  if (!isCurrentRun(run.id, activeRun?.id)) return;
+  finishWorker(run);
+  clearResult();
+  showError(message);
+  setStatus('Sanitization could not be completed.');
+}
+
+function launchWorker(run: ActiveRun): void {
+  let instance: Worker;
+  try {
+    instance = new Worker(new URL('./sanitize.worker.ts', import.meta.url), { type: 'module' });
+  } catch {
+    failRun(run, 'Sanitization could not start in this browser.');
+    return;
+  }
+  run.worker = instance;
   instance.addEventListener('message', (event: MessageEvent<WorkerResponse>) => {
-    if (worker !== instance) return;
+    if (!isCurrentRun(run.id, activeRun?.id) || run.worker !== instance) return;
     const response = event.data;
     if (response.type === 'progress') {
       const percent = response.totalBytes > 0 ? Math.min(100, response.bytesRead / response.totalBytes * 100) : 0;
       progress.value = percent;
       setStatus(`Sanitizing locally — ${Math.round(percent)}% (${formatBytes(response.bytesRead)} processed).`);
     } else if (response.type === 'complete') {
-      finishWorker(instance);
+      if (run.cancelRequested) {
+        finishWorker(run);
+        clearResult();
+        setStatus('Sanitization cancelled.');
+        return;
+      }
+      finishWorker(run);
       renderResult(response.result);
     } else if (response.type === 'cancelled') {
-      finishWorker(instance);
+      finishWorker(run);
       clearResult();
       setStatus('Sanitization cancelled.');
+    } else if (shouldRetryInMemory(response.code, run.inputBytes) && run.request.destination.kind === 'disk') {
+      run.request = { ...run.request, destination: { kind: 'memory' } };
+      instance.terminate();
+      run.worker = undefined;
+      setStatus('Direct-to-disk output was unavailable; retrying with the safe 50 MiB in-memory path.');
+      launchWorker(run);
     } else {
-      finishWorker(instance);
-      clearResult();
-      showError(response.message);
-      setStatus('Sanitization could not be completed.');
+      failRun(run, response.code === 'disk-unavailable'
+        ? 'Direct-to-disk output is unavailable. Files over 50 MiB cannot be safely processed in memory.'
+        : response.message);
     }
   });
   instance.addEventListener('error', () => {
-    if (worker !== instance) return;
-    finishWorker(instance);
-    showError('Sanitization failed. The original input remains available for retry.');
+    if (!isCurrentRun(run.id, activeRun?.id) || run.worker !== instance) return;
+    failRun(run, 'Sanitization failed. The original input remains available for retry.');
   });
-  instance.postMessage(message);
+  try {
+    instance.postMessage(run.request);
+  } catch (reason) {
+    if (isDataCloneError(reason) && run.request.destination.kind === 'disk') {
+      if (shouldRetryInMemory('disk-unavailable', run.inputBytes)) {
+        run.request = { ...run.request, destination: { kind: 'memory' } };
+        instance.terminate();
+        run.worker = undefined;
+        setStatus('Direct-to-disk output was unavailable; retrying with the safe 50 MiB in-memory path.');
+        launchWorker(run);
+      } else {
+        failRun(run, 'Direct-to-disk output is unavailable. Files over 50 MiB cannot be safely processed in memory.');
+      }
+    } else {
+      failRun(run, 'The browser could not start the selected output method. Try again or use a smaller file.');
+    }
+  }
 }
 
-function finishWorker(instance: Worker): void {
-  if (cancelTimer !== undefined) window.clearTimeout(cancelTimer);
-  cancelTimer = undefined;
-  instance.terminate();
-  if (worker === instance) worker = undefined;
-  sanitizeButton.disabled = false;
-  cancelButton.hidden = true;
-  modeControls.forEach((control) => { control.disabled = false; });
-  inputControls.forEach((control) => { control.disabled = false; });
-  toggleRulesButton.disabled = false;
-  progressWrapper.hidden = true;
+function sendStart(message: StartMessage, inputBytes: number): void {
+  const run: ActiveRun = {
+    id: ++runSequence,
+    request: message,
+    inputBytes,
+    cancelRequested: false,
+  };
+  activeRun = run;
+  launchWorker(run);
+}
+
+function finishWorker(run: ActiveRun): void {
+  if (run.cancelTimer !== undefined) window.clearTimeout(run.cancelTimer);
+  run.cancelTimer = undefined;
+  run.worker?.terminate();
+  run.worker = undefined;
+  if (isCurrentRun(run.id, activeRun?.id)) activeRun = undefined;
+  setIdle();
+}
+
+function retireRun(run: ActiveRun): void {
+  run.cancelRequested = true;
+  activeRun = undefined;
+  try {
+    run.worker?.postMessage({ type: 'cancel' });
+  } catch {
+    // The timeout below still terminates a worker that rejects cancellation.
+  }
+  run.cancelTimer = window.setTimeout(() => {
+    run.worker?.terminate();
+    run.worker = undefined;
+  }, CANCEL_TIMEOUT_MS);
+  setIdle();
 }
 
 function cancelRun(): void {
-  if (!worker) return;
+  const run = activeRun;
+  if (!run || run.cancelRequested) return;
+  run.cancelRequested = true;
   cancelButton.disabled = true;
-  worker.postMessage({ type: 'cancel' });
-  cancelTimer = window.setTimeout(() => {
-    if (!worker) return;
-    const instance = worker;
-    finishWorker(instance);
+  setStatus('Cancelling…');
+  try {
+    run.worker?.postMessage({ type: 'cancel' });
+  } catch {
+    finishWorker(run);
     clearResult();
     setStatus('Sanitization cancelled.');
-  }, 2000);
+    return;
+  }
+  run.cancelTimer = window.setTimeout(() => {
+    if (!isCurrentRun(run.id, activeRun?.id)) return;
+    finishWorker(run);
+    clearResult();
+    setStatus('Sanitization cancelled.');
+  }, CANCEL_TIMEOUT_MS);
 }
 
 async function sanitize(): Promise<void> {
   clearError();
-  if (worker) return;
+  if (activeRun) return;
   const kind = modeFile.checked ? 'file' : 'text';
   const selected = ruleInputs().filter((input) => input.checked).map((input) => input.value);
   const rules = orderRuleIds(selected);
@@ -285,10 +386,7 @@ async function sanitize(): Promise<void> {
       showError(sizeError);
       return;
     }
-    if (await sampleIsBinary(selectedFile)) {
-      showError('This file looks binary. Choose a UTF-8 text file instead.');
-      return;
-    }
+    const binaryCheck = sampleIsBinary(selectedFile);
     let handle: WritableFileHandleLike | undefined;
     if (canStreamToDisk()) {
       try {
@@ -301,6 +399,10 @@ async function sanitize(): Promise<void> {
         showError('The browser could not open an output file. Try again or use a smaller file.');
         return;
       }
+    }
+    if (await binaryCheck) {
+      showError('This file looks binary. Choose a UTF-8 text file instead.');
+      return;
     }
     if (handle) {
       input = { kind: 'file', blob: selectedFile, outputName: outputFileName(selectedFile.name) };
@@ -324,16 +426,18 @@ async function sanitize(): Promise<void> {
     destination = { kind: 'memory' };
   }
   activeInputKind = kind;
+  activeInputBytes = kind === 'file' ? selectedFile!.size : new TextEncoder().encode(pasteInput.value).byteLength;
   clearResult();
   sanitizeButton.disabled = true;
   cancelButton.hidden = false;
   modeControls.forEach((control) => { control.disabled = true; });
   inputControls.forEach((control) => { control.disabled = true; });
+  setRuleInputsDisabled(true);
   toggleRulesButton.disabled = true;
   progressWrapper.hidden = false;
   progress.value = 0;
   setStatus('Starting local sanitization…');
-  sendStart({ type: 'start', key: session.key, rules, aggressive: aggressive.checked, input, destination });
+  sendStart({ type: 'start', key: session.key, rules, aggressive: aggressive.checked, input, destination }, activeInputBytes);
 }
 
 function downloadResult(): void {
@@ -359,7 +463,8 @@ async function copyResult(): Promise<void> {
 }
 
 function clearSession(): void {
-  if (worker) cancelRun();
+  if (hasResult() && !window.confirm('Discard the current sanitized result?')) return;
+  if (activeRun) retireRun(activeRun);
   selectedFile = null;
   fileInput.value = '';
   pasteInput.value = '';
@@ -369,6 +474,7 @@ function clearSession(): void {
   updateToggleLabel();
   modeFile.checked = true;
   updateMode();
+  activeInputBytes = 0;
   clearResult();
   clearError();
   session = replaceSessionKey(storage);
@@ -376,12 +482,6 @@ function clearSession(): void {
 }
 
 function switchMode(next: 'file' | 'text'): void {
-  if (!confirmReplacingResult()) {
-    if (next === 'file') modeText.checked = true;
-    else modeFile.checked = true;
-    return;
-  }
-  clearResult();
   if (next === 'file') {
     pasteInput.value = '';
     activeInputKind = 'file';
@@ -402,7 +502,6 @@ pasteInput.addEventListener('input', () => {
     selectedFile = null;
     fileInput.value = '';
     fileName.textContent = '';
-    clearResult();
   }
 });
 dropZone.addEventListener('dragover', (event) => { event.preventDefault(); dropZone.classList.add('dragging'); });
@@ -410,7 +509,7 @@ dropZone.addEventListener('dragleave', () => dropZone.classList.remove('dragging
 dropZone.addEventListener('drop', (event) => {
   event.preventDefault();
   dropZone.classList.remove('dragging');
-  if (confirmReplacingResult()) setFile(event.dataTransfer?.files[0]);
+  setFile(event.dataTransfer?.files[0]);
 });
 toggleRulesButton.addEventListener('click', () => {
   const select = toggleRulesButton.textContent === 'Select all';

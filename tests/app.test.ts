@@ -6,6 +6,7 @@ import type { StartMessage, WritableFileHandleLike } from '../src/protocol';
 import {
   DIRECT_LIMIT_BYTES,
   MEMORY_LIMIT_BYTES,
+  CANCEL_TIMEOUT_MS,
   getInputLimit,
   getOrCreateSessionKey,
   isProbablyBinary,
@@ -14,6 +15,8 @@ import {
   outputFileName,
   replaceSessionKey,
   validateInputSize,
+  isCurrentRun,
+  shouldRetryInMemory,
 } from '../src/policy';
 
 function memoryStorage() {
@@ -26,6 +29,15 @@ function memoryStorage() {
 }
 
 describe('browser policy', () => {
+  it('allows only safe disk-error fallback and isolates retired runs', () => {
+    expect(shouldRetryInMemory('disk-unavailable', MEMORY_LIMIT_BYTES)).toBe(true);
+    expect(shouldRetryInMemory('disk-unavailable', MEMORY_LIMIT_BYTES + 1)).toBe(false);
+    expect(shouldRetryInMemory('failed', 1)).toBe(false);
+    expect(CANCEL_TIMEOUT_MS).toBe(1500);
+    expect(isCurrentRun(3, 3)).toBe(true);
+    expect(isCurrentRun(3, 4)).toBe(false);
+  });
+
   it('uses capability-dependent limits', () => {
     expect(getInputLimit('file', true)).toBe(DIRECT_LIMIT_BYTES);
     expect(getInputLimit('file', false)).toBe(MEMORY_LIMIT_BYTES);
