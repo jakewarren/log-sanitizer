@@ -22,7 +22,7 @@ The app detects capabilities rather than browser names. Only strict UTF-8, with 
 
 ## Local development
 
-Requires Bun 1.4.0 or newer.
+Requires Bun 1.4.0.
 
 ```bash
 bun ci
