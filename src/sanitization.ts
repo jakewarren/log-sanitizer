@@ -24,12 +24,15 @@ export async function* strictUtf8Source(
   blob: Blob,
   onBytesRead: (bytesRead: number) => void,
   chunkBytes = CHUNK_BYTES,
+  signal?: AbortSignal,
 ): AsyncGenerator<string> {
   const decoder = new TextDecoder('utf-8', { fatal: true });
   try {
     for (let offset = 0; offset < blob.size; offset += chunkBytes) {
+      if (signal?.aborted) throw new DOMException('The operation was aborted.', 'AbortError');
       const end = Math.min(offset + chunkBytes, blob.size);
       const bytes = new Uint8Array(await blob.slice(offset, end).arrayBuffer());
+      if (signal?.aborted) throw new DOMException('The operation was aborted.', 'AbortError');
       const text = decoder.decode(bytes, { stream: true });
       onBytesRead(end);
       if (text) yield text;
@@ -96,7 +99,7 @@ export async function runSanitization(
   let bytesRead = 0;
   const source = strictUtf8Source(blob, (value) => {
     bytesRead = value;
-  });
+  }, CHUNK_BYTES, signal);
   const sanitizer = createSanitizer({
     key: message.key,
     keyEncoding: 'hex',

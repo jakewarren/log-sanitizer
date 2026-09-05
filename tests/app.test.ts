@@ -160,4 +160,98 @@ describe('streaming sanitizer', () => {
     };
     await expect(runSanitization(request, controller.signal, () => undefined)).rejects.toThrow();
   });
+
+  it('aborts an active disk run without closing and permits a subsequent run', async () => {
+    class ReadCountingBlob {
+      readonly size: number;
+      reads = 0;
+
+      constructor(
+        private readonly bytes: Uint8Array,
+        private readonly root: ReadCountingBlob = this,
+      ) {
+        this.size = bytes.byteLength;
+      }
+
+      slice(start = 0, end = this.size): ReadCountingBlob {
+        return new ReadCountingBlob(this.bytes.slice(start, end), this.root);
+      }
+
+      async arrayBuffer(): Promise<ArrayBuffer> {
+        this.root.reads += 1;
+        return this.bytes.slice().buffer;
+      }
+    }
+
+    const firstController = new AbortController();
+    const firstBlob = new ReadCountingBlob(
+      new TextEncoder().encode(`from 10.0.0.7 ${'x'.repeat(4 * 1024 * 1024)}`),
+    );
+    let firstClosed = false;
+    let firstAborted = false;
+    const firstHandle: WritableFileHandleLike = {
+      async createWritable() {
+        return {
+          async write() {
+            firstController.abort();
+          },
+          async close() {
+            firstClosed = true;
+          },
+          async abort() {
+            firstAborted = true;
+          },
+        };
+      },
+    };
+    const firstRequest: StartMessage = {
+      type: 'start',
+      key: '11'.repeat(32),
+      rules: ['ips'],
+      aggressive: false,
+      input: { kind: 'file', blob: firstBlob as unknown as Blob, outputName: 'active.log' },
+      destination: { kind: 'disk', handle: firstHandle },
+    };
+
+    let progressCalls = 0;
+    await expect(
+      runSanitization(firstRequest, firstController.signal, () => {
+        progressCalls += 1;
+        if (progressCalls === 1) firstController.abort();
+      }),
+    ).rejects.toThrow();
+    expect(progressCalls).toBe(1);
+    expect(firstBlob.reads).toBe(1);
+    expect(firstClosed).toBe(false);
+    expect(firstAborted).toBe(true);
+
+    let secondClosed = false;
+    let secondAborted = false;
+    const secondHandle: WritableFileHandleLike = {
+      async createWritable() {
+        return {
+          async write() {},
+          async close() {
+            secondClosed = true;
+          },
+          async abort() {
+            secondAborted = true;
+          },
+        };
+      },
+    };
+    const secondRequest: StartMessage = {
+      ...firstRequest,
+      input: { kind: 'file', blob: new Blob(['from 10.0.0.7']), outputName: 'next.log' },
+      destination: { kind: 'disk', handle: secondHandle },
+    };
+    const secondResult = await runSanitization(
+      secondRequest,
+      new AbortController().signal,
+      () => undefined,
+    );
+    expect(secondResult.kind).toBe('disk');
+    expect(secondClosed).toBe(true);
+    expect(secondAborted).toBe(false);
+  });
 });
