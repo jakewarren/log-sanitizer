@@ -4,6 +4,7 @@ import { Window } from 'happy-dom';
 import { sanitizeText } from '@socprime/logtotal-sanitizer';
 import { strictUtf8Source, runSanitization } from '../src/sanitization';
 import type { StartMessage, WritableFileHandleLike } from '../src/protocol';
+import viteConfig from '../vite.config';
 import {
   DIRECT_LIMIT_BYTES,
   MEMORY_LIMIT_BYTES,
@@ -76,6 +77,12 @@ describe('browser policy', () => {
     const first = sanitizeText(input, { ...options, key: keyA }).output;
     expect(sanitizeText(input, { ...options, key: keyA }).output).toBe(first);
     expect(sanitizeText(input, { ...options, key: keyB }).output).not.toBe(first);
+  });
+});
+
+describe('deployment configuration', () => {
+  it('uses relative asset URLs for GitHub Pages project paths', () => {
+    expect(viteConfig).toMatchObject({ base: './' });
   });
 });
 
