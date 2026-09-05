@@ -15,6 +15,7 @@ import {
   orderRuleIds,
   outputFileName,
   replaceSessionKey,
+  RULES,
   validateInputSize,
 } from '../src/policy';
 
@@ -120,6 +121,27 @@ describe('streaming sanitizer', () => {
     expect(result.text).toMatch(/<IP:[0-9a-f]{16}>/);
     expect(result.report.totalMatches).toBe(1);
     expect('replacements' in result.report).toBe(false);
+  });
+
+  it('clamps each long single-line preview to UTF-8 bytes without splitting multibyte text', async () => {
+    const request: StartMessage = {
+      type: 'start',
+      key: '11'.repeat(32),
+      rules: ['ips'],
+      aggressive: false,
+      input: { kind: 'text', text: `from 10.0.0.7 ${'é'.repeat(200_000)}`, outputName: 'sanitized.txt' },
+      destination: { kind: 'memory' },
+    };
+    const result = await runSanitization(request, new AbortController().signal, () => undefined);
+    const utf8 = new TextEncoder();
+    const decoder = new TextDecoder('utf-8', { fatal: true });
+    if (result.kind !== 'text') throw new Error('Expected text result');
+    for (const side of [result.report.preview.before, result.report.preview.after]) {
+      const text = side.map((segment) => segment.text).join('');
+      expect(utf8.encode(text).byteLength).toBeLessThanOrEqual(256 * 1024);
+      expect(decoder.decode(utf8.encode(text))).toBe(text);
+      expect(side.some((segment) => segment.changed)).toBe(true);
+    }
   });
 
   it('streams to a file-like handle and closes only on success', async () => {
@@ -331,6 +353,11 @@ describe('DOM run lifecycle', () => {
       : { kind, blob: new Blob(['done']), fileName: 'sample.sanitized.log', report: { counts: {}, totalMatches: 0, lineCount: 1, preview: { before: [], after: [] } } },
   });
 
+  const completeText = (): WorkerResponse => ({
+    type: 'complete',
+    result: { kind: 'text', text: 'sanitized', fileName: 'sanitized.txt', report: { counts: {}, totalMatches: 0, lineCount: 1, preview: { before: [], after: [] } } },
+  });
+
   async function settle(): Promise<void> {
     for (let index = 0; index < 5; index += 1) await Promise.resolve();
   }
@@ -470,5 +497,177 @@ describe('DOM run lifecycle', () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  it('claims delayed file preflight synchronously so a double click starts one run', async () => {
+    const resolvers: Array<(handle: WritableFileHandleLike) => void> = [];
+    const picker = vi.fn(() => new Promise<WritableFileHandleLike>((resolve) => resolvers.push(resolve)));
+    (appWindow.showSaveFilePicker as ReturnType<typeof vi.fn>).mockImplementation(picker);
+    try {
+      setFile();
+      click('sanitize');
+      click('sanitize');
+      expect(picker).toHaveBeenCalledTimes(1);
+      expect((appDocument.getElementById('sanitize') as HTMLButtonElement).disabled).toBe(true);
+      resolvers[0]({ createWritable: vi.fn(async () => ({ write: vi.fn(), close: vi.fn(), abort: vi.fn() })) });
+      await settle();
+      expect(TestWorker.instances).toHaveLength(1);
+    } finally {
+      (appWindow.showSaveFilePicker as ReturnType<typeof vi.fn>).mockImplementation(async () => ({ createWritable: vi.fn() }));
+    }
+  });
+
+  it('retires delayed file preflight when Clear session is activated', async () => {
+    let resolvePicker!: (handle: WritableFileHandleLike) => void;
+    const picker = vi.fn(() => new Promise<WritableFileHandleLike>((resolve) => { resolvePicker = resolve; }));
+    (appWindow.showSaveFilePicker as ReturnType<typeof vi.fn>).mockImplementation(picker);
+    try {
+      setFile();
+      click('sanitize');
+      click('clear-session');
+      resolvePicker({ createWritable: vi.fn(async () => ({ write: vi.fn(), close: vi.fn(), abort: vi.fn() })) });
+      await settle();
+      expect(TestWorker.instances).toHaveLength(0);
+      expect((appDocument.getElementById('status') as HTMLElement).textContent).toContain('Session cleared');
+    } finally {
+      (appWindow.showSaveFilePicker as ReturnType<typeof vi.fn>).mockImplementation(async () => ({ createWritable: vi.fn() }));
+    }
+  });
+
+  it('keeps preflight bound to the initially selected file', async () => {
+    let resolvePicker!: (handle: WritableFileHandleLike) => void;
+    const picker = vi.fn(() => new Promise<WritableFileHandleLike>((resolve) => { resolvePicker = resolve; }));
+    (appWindow.showSaveFilePicker as ReturnType<typeof vi.fn>).mockImplementation(picker);
+    try {
+      setFile();
+      click('sanitize');
+      const input = appDocument.getElementById('file-input') as HTMLInputElement;
+      Object.defineProperty(input, 'files', { configurable: true, value: [new appWindow.File(['replacement'], 'replacement.log')] });
+      input.dispatchEvent(new appWindow.Event('change', { bubbles: true }));
+      resolvePicker({ createWritable: vi.fn(async () => ({ write: vi.fn(), close: vi.fn(), abort: vi.fn() })) });
+      await settle();
+      expect(TestWorker.instances).toHaveLength(1);
+      expect((TestWorker.instances[0].messages[0] as StartMessage).input).toMatchObject({ kind: 'file', outputName: 'sample.sanitized.log' });
+    } finally {
+      (appWindow.showSaveFilePicker as ReturnType<typeof vi.fn>).mockImplementation(async () => ({ createWritable: vi.fn() }));
+    }
+  });
+
+  it('rejects empty pasted input with a focused missing-input error', async () => {
+    const modeText = appDocument.getElementById('mode-text') as HTMLInputElement;
+    modeText.checked = true;
+    modeText.dispatchEvent(new appWindow.Event('change', { bubbles: true }));
+    click('sanitize');
+    await settle();
+    const error = appDocument.getElementById('error') as HTMLElement;
+    expect(error.textContent).toBe('Paste or type text before sanitizing.');
+    expect(appDocument.activeElement).toBe(error);
+    expect(TestWorker.instances).toHaveLength(0);
+  });
+
+  it('rejects a text control byte appearing after the first 8 KiB', async () => {
+    const modeText = appDocument.getElementById('mode-text') as HTMLInputElement;
+    modeText.checked = true;
+    modeText.dispatchEvent(new appWindow.Event('change', { bubbles: true }));
+    const paste = appDocument.getElementById('paste-input') as HTMLTextAreaElement;
+    paste.value = `${'a'.repeat(16 * 1024)}\0`;
+    paste.dispatchEvent(new appWindow.Event('input', { bubbles: true }));
+    click('sanitize');
+    await settle();
+    expect((appDocument.getElementById('error') as HTMLElement).textContent).toContain('binary control');
+    expect(TestWorker.instances).toHaveLength(0);
+  });
+
+  it('samples 64 KiB of a file for binary preflight', async () => {
+    const bytes = new Uint8Array(16 * 1024 + 1);
+    bytes.fill(0x61);
+    bytes[16 * 1024] = 0;
+    const input = appDocument.getElementById('file-input') as HTMLInputElement;
+    Object.defineProperty(input, 'files', { configurable: true, value: [new appWindow.File([bytes], 'binary.log')] });
+    input.dispatchEvent(new appWindow.Event('change', { bubbles: true }));
+    click('sanitize');
+    await settle();
+    expect((appDocument.getElementById('error') as HTMLElement).textContent).toContain('looks binary');
+    expect(TestWorker.instances).toHaveLength(0);
+  });
+
+  it('renders nonzero rule counts in RULES priority order', async () => {
+    setFile();
+    click('sanitize');
+    await settle();
+    TestWorker.instances[0].emit({
+      type: 'complete',
+      result: { kind: 'blob', blob: new Blob(['done']), fileName: 'sample.sanitized.log', report: { counts: { ips: 2, secrets: 1 }, totalMatches: 3, lineCount: 1, preview: { before: [], after: [] } } },
+    });
+    await settle();
+    const labels = Array.from(appDocument.querySelectorAll('#counts-list li')).map((item) => item.textContent);
+    expect(labels).toEqual([RULES.find((rule) => rule.id === 'secrets')!.label + ': 1', RULES.find((rule) => rule.id === 'ips')!.label + ': 2']);
+  });
+
+  it('keeps a result when file selection is refused', async () => {
+    setFile();
+    click('sanitize');
+    await settle();
+    TestWorker.instances[0].emit(complete());
+    await settle();
+    appWindow.confirm = () => false;
+    const input = appDocument.getElementById('file-input') as HTMLInputElement;
+    Object.defineProperty(input, 'files', { configurable: true, value: [new appWindow.File(['replacement'], 'replacement.log')] });
+    input.dispatchEvent(new appWindow.Event('change', { bubbles: true }));
+    expect((appDocument.getElementById('results') as HTMLElement).hidden).toBe(false);
+    expect(TestWorker.instances).toHaveLength(1);
+    appWindow.confirm = () => true;
+    click('sanitize');
+    await settle();
+    expect((TestWorker.instances[1].messages[0] as StartMessage).input).toMatchObject({ kind: 'file', outputName: 'sample.sanitized.log' });
+  });
+
+  it('clears a result when a dropped file transition is accepted', async () => {
+    setFile();
+    click('sanitize');
+    await settle();
+    TestWorker.instances[0].emit(complete());
+    await settle();
+    const dropEvent = new appWindow.Event('drop', { bubbles: true });
+    Object.defineProperty(dropEvent, 'dataTransfer', { value: { files: [new appWindow.File(['replacement'], 'replacement.log')] } });
+    appDocument.getElementById('drop-zone')?.dispatchEvent(dropEvent);
+    expect((appDocument.getElementById('results') as HTMLElement).hidden).toBe(true);
+  });
+
+  it('keeps a result when a pasted edit is refused', async () => {
+    const modeText = appDocument.getElementById('mode-text') as HTMLInputElement;
+    modeText.checked = true;
+    modeText.dispatchEvent(new appWindow.Event('change', { bubbles: true }));
+    const paste = appDocument.getElementById('paste-input') as HTMLTextAreaElement;
+    paste.value = 'original';
+    paste.dispatchEvent(new appWindow.Event('input', { bubbles: true }));
+    click('sanitize');
+    await settle();
+    TestWorker.instances[0].emit(completeText());
+    await settle();
+    expect((appDocument.getElementById('results') as HTMLElement).hidden).toBe(false);
+    expect((appDocument.getElementById('copy-result') as HTMLButtonElement).hidden).toBe(false);
+    appWindow.confirm = () => false;
+    paste.value = 'replacement';
+    paste.dispatchEvent(new appWindow.Event('input', { bubbles: true }));
+    expect((appDocument.getElementById('results') as HTMLElement).hidden).toBe(false);
+    expect((appDocument.getElementById('copy-result') as HTMLButtonElement).hidden).toBe(false);
+    expect(TestWorker.instances).toHaveLength(1);
+    appWindow.confirm = () => true;
+  });
+
+  it('reverts a refused mode switch and keeps the result visible', async () => {
+    setFile();
+    click('sanitize');
+    await settle();
+    TestWorker.instances[0].emit(complete());
+    await settle();
+    appWindow.confirm = () => false;
+    const modeText = appDocument.getElementById('mode-text') as HTMLInputElement;
+    modeText.checked = true;
+    modeText.dispatchEvent(new appWindow.Event('change', { bubbles: true }));
+    expect((appDocument.getElementById('mode-file') as HTMLInputElement).checked).toBe(true);
+    expect((appDocument.getElementById('results') as HTMLElement).hidden).toBe(false);
+    appWindow.confirm = () => true;
   });
 });

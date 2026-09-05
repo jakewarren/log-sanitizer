@@ -8,7 +8,7 @@ Input, output, replacement values, and reports remain in the browser. The app ha
 
 The browser still requests the static application files from GitHub Pages when the page loads. Following the source-library link navigates away only after a user click.
 
-Source files are never modified; sanitized output is written to a newly chosen destination or downloaded by the browser.
+The app never automatically selects or overwrites the source. It recommends a distinct output name; you control the native destination.
 
 ## Browser limits
 

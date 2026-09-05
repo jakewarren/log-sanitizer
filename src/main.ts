@@ -43,7 +43,15 @@ let session: SessionKeyState;
 let currentResult: CompleteResult | undefined;
 let activeInputKind: InputKind | undefined;
 let activeInputBytes = 0;
+let pasteValue = '';
 let runSequence = 0;
+
+interface ActivePreflight {
+  kind: InputKind;
+  file: File | null;
+}
+
+let activePreflight: ActivePreflight | undefined;
 
 interface ActiveRun {
   id: number;
@@ -130,10 +138,22 @@ function hasResult(): boolean {
   return currentResult !== undefined;
 }
 
+function allowInputTransition(onCancel: () => void): boolean {
+  if (!hasResult()) return true;
+  if (!window.confirm('Discard the current sanitized result?')) {
+    onCancel();
+    return false;
+  }
+  clearResult();
+  return true;
+}
+
 function setFile(file: File | undefined): void {
-  if (!file) return;
+  if (!file || activePreflight) return;
+  if (!allowInputTransition(() => { fileInput.value = ''; })) return;
   selectedFile = file;
   pasteInput.value = '';
+  pasteValue = '';
   fileName.textContent = `${file.name} (${formatBytes(file.size)}). Suggested output: ${outputFileName(file.name)} — keep the output name distinct from the source.`;
   clearError();
   setStatus('File ready to sanitize locally.');
@@ -183,10 +203,12 @@ function renderResult(result: CompleteResult): void {
   const report = result.report;
   totalMatches.textContent = String(report.totalMatches);
   lineCount.textContent = String(report.lineCount);
-  countsList.replaceChildren(...Object.entries(report.counts).map(([id, count]) => {
+  countsList.replaceChildren(...RULES.flatMap((rule) => {
+    const count = report.counts[rule.id];
+    if (!count) return [];
     const item = document.createElement('li');
-    item.textContent = `${RULES.find((rule) => rule.id === id)?.label ?? id}: ${count}`;
-    return item;
+    item.textContent = `${rule.label}: ${count}`;
+    return [item];
   }));
   const beforeLimited = limitPreviewSegments(report.preview.before);
   const afterLimited = limitPreviewSegments(report.preview.after);
@@ -219,7 +241,7 @@ function renderSegments(target: HTMLElement, segments: Array<{ text: string; cha
 }
 
 async function sampleIsBinary(file: File): Promise<boolean> {
-  const sample = new Uint8Array(await file.slice(0, 8192).arrayBuffer());
+  const sample = new Uint8Array(await file.slice(0, 64 * 1024).arrayBuffer());
   return isProbablyBinary(sample);
 }
 
@@ -244,6 +266,28 @@ function setIdle(): void {
   setRuleInputsDisabled(false);
   toggleRulesButton.disabled = false;
   progressWrapper.hidden = true;
+}
+
+function setBusy(): void {
+  sanitizeButton.disabled = true;
+  cancelButton.hidden = false;
+  modeControls.forEach((control) => { control.disabled = true; });
+  inputControls.forEach((control) => { control.disabled = true; });
+  setRuleInputsDisabled(true);
+  toggleRulesButton.disabled = true;
+  progressWrapper.hidden = false;
+  progress.value = 0;
+}
+
+function isCurrentPreflight(preflight: ActivePreflight): boolean {
+  return activePreflight === preflight;
+}
+
+function finishPreflight(preflight: ActivePreflight): boolean {
+  if (!isCurrentPreflight(preflight)) return false;
+  activePreflight = undefined;
+  setIdle();
+  return true;
 }
 
 function failRun(run: ActiveRun, message: string): void {
@@ -377,7 +421,7 @@ function cancelRun(): void {
 
 async function sanitize(): Promise<void> {
   clearError();
-  if (activeRun) return;
+  if (activeRun || activePreflight) return;
   const kind = modeFile.checked ? 'file' : 'text';
   const selected = ruleInputs().filter((input) => input.checked).map((input) => input.value);
   const rules = orderRuleIds(selected);
@@ -392,17 +436,26 @@ async function sanitize(): Promise<void> {
       showError('Choose a file before sanitizing.');
       return;
     }
-    const sizeError = validateInputSize(selectedFile.size, 'file', canStreamToDisk());
+  }
+  const preflight: ActivePreflight = { kind, file: kind === 'file' ? selectedFile : null };
+  activePreflight = preflight;
+  setBusy();
+  if (kind === 'file') {
+    const file = preflight.file!;
+    const sizeError = validateInputSize(file.size, 'file', canStreamToDisk());
     if (sizeError) {
+      finishPreflight(preflight);
       showError(sizeError);
       return;
     }
-    const binaryCheck = sampleIsBinary(selectedFile);
+    const binaryCheck = sampleIsBinary(file);
     let handle: WritableFileHandleLike | undefined;
     if (canStreamToDisk()) {
       try {
-        handle = await chooseDestination(outputFileName(selectedFile.name));
+        handle = await chooseDestination(outputFileName(file.name));
       } catch (reason) {
+        if (!isCurrentPreflight(preflight)) return;
+        finishPreflight(preflight);
         if (reason instanceof DOMException && reason.name === 'AbortError') {
           setStatus('Output selection cancelled.');
           return;
@@ -411,42 +464,54 @@ async function sanitize(): Promise<void> {
         return;
       }
     }
-    if (await binaryCheck) {
+    if (!isCurrentPreflight(preflight)) return;
+    let binary: boolean;
+    try {
+      binary = await binaryCheck;
+    } catch {
+      if (!finishPreflight(preflight)) return;
+      showError('The browser could not read this file. Try another UTF-8 text file.');
+      return;
+    }
+    if (binary) {
+      if (!finishPreflight(preflight)) return;
       showError('This file looks binary. Choose a UTF-8 text file instead.');
       return;
     }
+    if (!isCurrentPreflight(preflight)) return;
     if (handle) {
-      input = { kind: 'file', blob: selectedFile, outputName: outputFileName(selectedFile.name) };
+      input = { kind: 'file', blob: file, outputName: outputFileName(file.name) };
       destination = { kind: 'disk', handle };
     } else {
-      input = { kind: 'file', blob: selectedFile, outputName: outputFileName(selectedFile.name) };
+      input = { kind: 'file', blob: file, outputName: outputFileName(file.name) };
       destination = { kind: 'memory' };
     }
   } else {
+    if (pasteInput.value === '') {
+      finishPreflight(preflight);
+      showError('Paste or type text before sanitizing.');
+      return;
+    }
     const bytes = new TextEncoder().encode(pasteInput.value).byteLength;
     const sizeError = validateInputSize(bytes, 'text', false);
     if (sizeError) {
+      finishPreflight(preflight);
       showError('Pasted text is larger than the 50 MiB limit.');
       return;
     }
-    if (isProbablyBinary(new TextEncoder().encode(pasteInput.value.slice(0, 8192)))) {
+    if (isProbablyBinary(new TextEncoder().encode(pasteInput.value).slice(0, 64 * 1024))) {
+      finishPreflight(preflight);
       showError('This text contains binary control data. Paste UTF-8 text instead.');
       return;
     }
     input = { kind: 'text', text: pasteInput.value, outputName: 'sanitized.txt' };
     destination = { kind: 'memory' };
   }
+  if (!isCurrentPreflight(preflight)) return;
   activeInputKind = kind;
-  activeInputBytes = kind === 'file' ? selectedFile!.size : new TextEncoder().encode(pasteInput.value).byteLength;
+  activeInputBytes = kind === 'file' ? preflight.file!.size : new TextEncoder().encode(pasteInput.value).byteLength;
   clearResult();
-  sanitizeButton.disabled = true;
-  cancelButton.hidden = false;
-  modeControls.forEach((control) => { control.disabled = true; });
-  inputControls.forEach((control) => { control.disabled = true; });
-  setRuleInputsDisabled(true);
-  toggleRulesButton.disabled = true;
-  progressWrapper.hidden = false;
-  progress.value = 0;
+  activePreflight = undefined;
   setStatus('Starting local sanitization…');
   sendStart({ type: 'start', key: session.key, rules, aggressive: aggressive.checked, input, destination }, activeInputBytes);
 }
@@ -475,10 +540,15 @@ async function copyResult(): Promise<void> {
 
 function clearSession(): void {
   if (hasResult() && !window.confirm('Discard the current sanitized result?')) return;
+  if (activePreflight) {
+    activePreflight = undefined;
+    setIdle();
+  }
   if (activeRun) retireRun(activeRun);
   selectedFile = null;
   fileInput.value = '';
   pasteInput.value = '';
+  pasteValue = '';
   fileName.textContent = '';
   aggressive.checked = false;
   ruleInputs().forEach((input) => { input.checked = true; });
@@ -493,8 +563,19 @@ function clearSession(): void {
 }
 
 function switchMode(next: 'file' | 'text'): void {
+  const previous = next === 'file' ? modeText : modeFile;
+  if (activePreflight) {
+    previous.checked = true;
+    updateMode();
+    return;
+  }
+  if (!allowInputTransition(() => {
+    previous.checked = true;
+    updateMode();
+  })) return;
   if (next === 'file') {
     pasteInput.value = '';
+    pasteValue = '';
     activeInputKind = 'file';
   } else {
     selectedFile = null;
@@ -509,6 +590,12 @@ modeFile.addEventListener('change', () => switchMode('file'));
 modeText.addEventListener('change', () => switchMode('text'));
 fileInput.addEventListener('change', () => setFile(fileInput.files?.[0]));
 pasteInput.addEventListener('input', () => {
+  if (activePreflight) {
+    pasteInput.value = pasteValue;
+    return;
+  }
+  if (!allowInputTransition(() => { pasteInput.value = pasteValue; })) return;
+  pasteValue = pasteInput.value;
   if (pasteInput.value) {
     selectedFile = null;
     fileInput.value = '';

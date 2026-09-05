@@ -1,6 +1,7 @@
 import {
   createSanitizer,
   type SanitizeReport,
+  type SanitizeSegment,
   type TextSink,
 } from '@socprime/logtotal-sanitizer';
 import { PREVIEW_BYTES } from './policy';
@@ -79,12 +80,35 @@ function memorySink() {
   };
 }
 
+function clampPreview(segments: readonly SanitizeSegment[]): SanitizeSegment[] {
+  const encoder = new TextEncoder();
+  const limited: SanitizeSegment[] = [];
+  let remaining = PREVIEW_BYTES;
+  for (const segment of segments) {
+    if (remaining === 0) break;
+    let chars = 0;
+    let bytes = 0;
+    for (const character of segment.text) {
+      const characterBytes = encoder.encode(character).byteLength;
+      if (bytes + characterBytes > remaining) break;
+      bytes += characterBytes;
+      chars += character.length;
+    }
+    if (chars > 0) limited.push({ text: segment.text.slice(0, chars), changed: segment.changed });
+    remaining -= bytes;
+  }
+  return limited;
+}
+
 function summarize(report: SanitizeReport): ReportSummary {
   return {
     counts: report.counts,
     totalMatches: report.totalMatches,
     lineCount: report.lineCount,
-    preview: report.preview,
+    preview: {
+      before: clampPreview(report.preview.before),
+      after: clampPreview(report.preview.after),
+    },
   };
 }
 
