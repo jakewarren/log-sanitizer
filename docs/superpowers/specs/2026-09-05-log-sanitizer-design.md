@@ -1,7 +1,7 @@
 # Browser-Local Log Sanitizer Design
 
 **Date:** 2026-09-05
-**Status:** Approved in chat; awaiting review of this written specification
+**Status:** Approved
 
 ## Purpose
 
@@ -69,12 +69,17 @@ changes during deliberate dependency upgrades.
 
 The app detects capabilities, not browser names. It communicates the active
 limit beside the input control and rejects oversized input before creating a
-worker or reading the complete input. The source file is never overwritten.
+worker or reading the complete input. The app suggests a distinct sanitized
+filename and never chooses the source as the destination automatically. The
+native Save dialog remains user-controlled and supplies any overwrite warning;
+browser file inputs do not expose enough path information for the app to prove
+that a manually chosen destination differs from the source.
 
 The 250 MiB tier is an acceptance target rather than an assumption. Manual
 acceptance testing must demonstrate it in current stable Chrome and Edge. A
-high-cardinality synthetic file is included in that check because the
-sanitizer's report data can consume memory even while output is streamed.
+high-cardinality synthetic file is included to verify that disabling raw
+replacement collection and bounding the preview keep report memory stable
+while output is streamed.
 If 250 MiB does not pass the acceptance check, the published limit must be
 lowered to the largest verified safe size rather than shipping an unsupported
 claim.
@@ -159,7 +164,8 @@ to understand any state.
    Filenames and extensions do not determine validity.
 5. For direct-to-disk output, request the destination from the user's click
    before starting the worker. Suggest `<stem>.sanitized.<extension>`, or
-   `<name>.sanitized` when the source has no extension.
+   `<name>.sanitized` when the source has no extension, and tell the user to
+   keep the distinct output name.
 6. Send the key, ordered selected rules, aggressive flag, input, and output
    capability to the worker.
 7. The worker constructs one sanitizer and processes the input as a stream.
@@ -167,9 +173,10 @@ to understand any state.
 8. The worker writes sanitized chunks directly to the chosen destination or,
    for the capped fallback, builds the result Blob. Pasted text is returned as
    an in-memory result.
-9. The worker reduces the library report to line count, total matches, counts
-   by rule, and the bounded preview before posting it to the main thread. It
-   discards raw originals and contexts.
+9. The sanitizer is configured with `report.replacements: false` and zero
+   context, so it never collects raw replacement inventories. The worker posts
+   only line count, total matches, counts by rule, and the bounded preview to
+   the main thread.
 10. The UI presents the summary and export actions. Loading a new input replaces
     the previous result; the session key remains unchanged.
 
@@ -193,12 +200,13 @@ next run.
 Sanitizer, decoding, storage, clipboard, and disk errors produce concise,
 actionable local messages. Errors are not reported remotely. A failed run
 keeps the original input available for retry but removes incomplete output and
-never overwrites the source file.
+never chooses the source file as its output automatically.
 
 If `sessionStorage` is unavailable, the tool remains usable with an in-memory
 key and clearly states that a refresh will change replacement tokens. If direct
-streaming fails its runtime probe, the app falls back to the 50 MiB tier before
-processing starts.
+streaming fails its runtime probe, the app falls back before processing when
+the input fits the 50 MiB tier; otherwise it rejects the run and explains the
+safe fallback limit.
 
 ## Privacy controls
 
@@ -262,5 +270,5 @@ The tool is successful when an analyst can open the public GitHub Pages URL,
 sanitize one supported file or pasted note using chosen built-in rules, verify
 the bounded result summary, and export it without any source or output content
 leaving the browser. It remains responsive at the stated capability-tier
-limits, produces stable tokens throughout one tab session, and fails safely
-without modifying the source.
+limits, produces stable tokens throughout one tab session, and fails without
+committing incomplete sanitized content.
