@@ -351,6 +351,28 @@ describe('page shell', () => {
       expect(html).toContain(`id="${id}"`);
     }
   });
+
+  it('starts with the recommended sanitization rules collapsed', async () => {
+    const html = await readFile(new URL('../index.html', import.meta.url), 'utf8');
+    const page = new Window();
+    page.document.write(html);
+
+    const panel = page.document.querySelector<HTMLDetailsElement>('#rules-panel');
+    expect(panel).not.toBeNull();
+    expect(panel?.open).toBe(false);
+    expect(panel?.querySelector('#rules-grid')).not.toBeNull();
+    expect(panel?.querySelector('#aggressive')).not.toBeNull();
+  });
+
+  it('keeps disclosure affordances out of accessible names', async () => {
+    const html = await readFile(new URL('../index.html', import.meta.url), 'utf8');
+    const page = new Window();
+    page.document.write(html);
+
+    const indicators = Array.from(page.document.querySelectorAll('details > summary .disclosure-icon'));
+    expect(indicators).toHaveLength(2);
+    expect(indicators.every((indicator) => indicator.getAttribute('aria-hidden') === 'true')).toBe(true);
+  });
 });
 
 describe('DOM run lifecycle', () => {

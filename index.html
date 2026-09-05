@@ -13,32 +13,41 @@
   </head>
   <body>
     <header class="site-header">
-      <div>
-        <p class="eyebrow">Local privacy utility</p>
-        <h1>Log Sanitizer</h1>
+      <div class="brand">
+        <span class="brand-mark" aria-hidden="true"><span></span><span></span><span></span></span>
+        <div>
+          <h1>Log Sanitizer</h1>
+          <p class="tagline">Remove sensitive data before logs leave your hands.</p>
+        </div>
       </div>
       <div class="header-actions">
-        <details>
-          <summary id="privacy-status">Processed entirely in this browser</summary>
+        <details class="privacy-disclosure">
+          <summary id="privacy-status"><span class="status-dot" aria-hidden="true"></span>Processed entirely in this browser<span class="disclosure-icon" aria-hidden="true"></span></summary>
           <p>Inputs and results are never uploaded. Only a random replacement key is kept in this tab through refreshes.</p>
         </details>
         <button id="clear-session" class="secondary" type="button">Clear session</button>
       </div>
     </header>
 
-    <main>
-      <section aria-labelledby="input-heading">
-        <p class="step">Step 1</p>
-        <h2 id="input-heading">Add content</h2>
+    <main class="app-shell">
+      <section class="source-panel" aria-labelledby="input-heading">
+        <div class="panel-heading">
+          <span class="step-marker" aria-hidden="true">1</span>
+          <div>
+            <h2 id="input-heading">Choose your source</h2>
+            <p>Work with one UTF-8 log file or a block of incident notes.</p>
+          </div>
+        </div>
         <fieldset class="mode-switch">
           <legend>Input type</legend>
-          <label><input id="mode-file" type="radio" name="mode" value="file" checked> Upload file</label>
-          <label><input id="mode-text" type="radio" name="mode" value="text"> Paste text</label>
+          <label><input id="mode-file" type="radio" name="mode" value="file" checked><span>Upload file</span></label>
+          <label><input id="mode-text" type="radio" name="mode" value="text"><span>Paste text</span></label>
         </fieldset>
         <div id="file-panel">
           <label id="drop-zone" class="drop-zone" for="file-input">
-            <strong>Drop one file here</strong>
-            <span>or choose a UTF-8 text file</span>
+            <span class="drop-mark" aria-hidden="true"><span></span><span></span><span></span></span>
+            <strong>Drop a UTF-8 file here</strong>
+            <span>One log, text, JSON, or CSV file at a time</span>
           </label>
           <input id="file-input" type="file">
           <p id="file-name" class="hint"></p>
@@ -51,41 +60,60 @@
         </div>
       </section>
 
-      <section aria-labelledby="rules-heading">
-        <p class="step">Step 2</p>
-        <div class="section-heading">
-          <h2 id="rules-heading">Choose rules</h2>
-          <button id="toggle-rules" class="link-button" type="button">Clear all</button>
-        </div>
-        <div id="rules-grid" class="rules-grid"></div>
-        <label class="aggressive">
-          <input id="aggressive" type="checkbox">
-          <span><strong>Aggressive detection</strong><small>Broader matching may redact benign values.</small></span>
-        </label>
-      </section>
+      <aside class="control-column" aria-label="Sanitization controls">
+        <details id="rules-panel" class="rules-panel">
+          <summary>
+            <span>
+              <strong>Sanitization rules</strong>
+              <small>Recommended defaults are preselected</small>
+            </span>
+            <span class="disclosure-icon" aria-hidden="true"></span>
+          </summary>
+          <div class="rules-body">
+            <div class="section-heading">
+              <h2 id="rules-heading">Choose what to remove</h2>
+              <button id="toggle-rules" class="link-button" type="button">Clear all</button>
+            </div>
+            <div id="rules-grid" class="rules-grid"></div>
+            <label class="aggressive">
+              <input id="aggressive" type="checkbox">
+              <span><strong>Aggressive detection</strong><small>Broader matching may redact benign values.</small></span>
+            </label>
+          </div>
+        </details>
 
-      <section aria-labelledby="run-heading">
-        <p class="step">Step 3</p>
-        <h2 id="run-heading">Sanitize locally</h2>
-        <div class="run-actions">
-          <button id="sanitize" class="primary" type="button">Sanitize locally</button>
-          <button id="cancel" class="secondary" type="button" hidden>Cancel</button>
-        </div>
-        <div id="progress-wrapper" hidden>
-          <progress id="progress" max="100" value="0"></progress>
-        </div>
-        <p id="status" role="status" aria-live="polite"></p>
-        <p id="error" class="error" role="alert" tabindex="-1" hidden></p>
-      </section>
+        <section class="run-panel" aria-labelledby="run-heading">
+          <div class="panel-heading compact">
+            <span class="step-marker" aria-hidden="true">2</span>
+            <div>
+              <h2 id="run-heading">Sanitize</h2>
+              <p>Processing stays in this tab.</p>
+            </div>
+          </div>
+          <div class="run-actions">
+            <button id="sanitize" class="primary" type="button">Sanitize locally</button>
+            <button id="cancel" class="secondary" type="button" hidden>Cancel</button>
+          </div>
+          <div id="progress-wrapper" hidden>
+            <progress id="progress" max="100" value="0"></progress>
+          </div>
+          <p id="status" role="status" aria-live="polite"></p>
+          <p id="error" class="error" role="alert" tabindex="-1" hidden></p>
+        </section>
+      </aside>
 
-      <section id="results" aria-labelledby="results-heading" hidden>
-        <p class="step">Result</p>
-        <h2 id="results-heading" tabindex="-1">Sanitization complete</h2>
-        <p><strong id="total-matches">0</strong> replacements across <strong id="line-count">0</strong> lines.</p>
+      <section id="results" class="results-panel" aria-labelledby="results-heading" hidden>
+        <div class="results-heading">
+          <div>
+            <p class="result-label">Result</p>
+            <h2 id="results-heading" tabindex="-1">Sanitization complete</h2>
+          </div>
+          <p class="result-summary"><strong id="total-matches">0</strong> replacements across <strong id="line-count">0</strong> lines.</p>
+        </div>
         <ul id="counts-list" class="counts"></ul>
         <div class="preview-grid">
-          <div><h3>Before</h3><pre id="before-preview"></pre></div>
-          <div><h3>After</h3><pre id="after-preview"></pre></div>
+          <div class="preview-panel"><h3>Before</h3><pre id="before-preview"></pre></div>
+          <div class="preview-panel after"><h3>After</h3><pre id="after-preview"></pre></div>
         </div>
         <p id="preview-note" class="hint"></p>
         <div class="run-actions">
@@ -96,7 +124,8 @@
     </main>
 
     <footer>
-      Powered by <a href="https://github.com/socprime/logtotal-sanitizer" rel="noreferrer">SOC Prime LogTotal Sanitizer</a> (Apache-2.0).
+      <span>No uploads. No server.</span>
+      <span>Powered by <a href="https://github.com/socprime/logtotal-sanitizer" rel="noreferrer">SOC Prime LogTotal Sanitizer</a> (Apache-2.0).</span>
     </footer>
   </body>
 </html>
