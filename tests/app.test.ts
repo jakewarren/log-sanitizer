@@ -1,5 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { sanitizeText } from '@socprime/logtotal-sanitizer';
+import { strictUtf8Source, runSanitization } from '../src/sanitization';
+import type { StartMessage, WritableFileHandleLike } from '../src/protocol';
 import {
   DIRECT_LIMIT_BYTES,
   MEMORY_LIMIT_BYTES,
@@ -72,5 +74,90 @@ describe('browser policy', () => {
     const first = sanitizeText(input, { ...options, key: keyA }).output;
     expect(sanitizeText(input, { ...options, key: keyA }).output).toBe(first);
     expect(sanitizeText(input, { ...options, key: keyB }).output).not.toBe(first);
+  });
+});
+
+async function collect(source: AsyncIterable<string>): Promise<string> {
+  let value = '';
+  for await (const chunk of source) value += chunk;
+  return value;
+}
+
+describe('streaming sanitizer', () => {
+  it('decodes a BOM and split multi-byte UTF-8 sequence', async () => {
+    const bytes = new Uint8Array([0xef, 0xbb, 0xbf, 0x41, 0xe2, 0x82, 0xac, 0x42]);
+    expect(await collect(strictUtf8Source(new Blob([bytes]), () => undefined, 2))).toBe('A€B');
+  });
+
+  it('rejects malformed UTF-8', async () => {
+    const malformed = new Blob([new Uint8Array([0xc3, 0x28])]);
+    await expect(collect(strictUtf8Source(malformed, () => undefined, 1))).rejects.toThrow(
+      'Input is not valid UTF-8',
+    );
+  });
+
+  it('returns a bounded in-memory text result without raw replacements', async () => {
+    const request: StartMessage = {
+      type: 'start',
+      key: '11'.repeat(32),
+      rules: ['ips'],
+      aggressive: false,
+      input: { kind: 'text', text: 'from 10.0.0.7', outputName: 'sanitized.txt' },
+      destination: { kind: 'memory' },
+    };
+    const result = await runSanitization(request, new AbortController().signal, () => undefined);
+    expect(result.kind).toBe('text');
+    if (result.kind !== 'text') throw new Error('Expected text result');
+    expect(result.text).toMatch(/<IP:[0-9a-f]{16}>/);
+    expect(result.report.totalMatches).toBe(1);
+    expect('replacements' in result.report).toBe(false);
+  });
+
+  it('streams to a file-like handle and closes only on success', async () => {
+    const chunks: string[] = [];
+    let closed = false;
+    let aborted = false;
+    const handle: WritableFileHandleLike = {
+      async createWritable() {
+        return {
+          async write(chunk) {
+            chunks.push(chunk);
+          },
+          async close() {
+            closed = true;
+          },
+          async abort() {
+            aborted = true;
+          },
+        };
+      },
+    };
+    const request: StartMessage = {
+      type: 'start',
+      key: '11'.repeat(32),
+      rules: ['ips'],
+      aggressive: false,
+      input: { kind: 'file', blob: new Blob(['from 10.0.0.7']), outputName: 'app.sanitized.log' },
+      destination: { kind: 'disk', handle },
+    };
+    const result = await runSanitization(request, new AbortController().signal, () => undefined);
+    expect(result.kind).toBe('disk');
+    expect(chunks.join('')).toMatch(/<IP:[0-9a-f]{16}>/);
+    expect(closed).toBe(true);
+    expect(aborted).toBe(false);
+  });
+
+  it('honors cancellation before writing', async () => {
+    const controller = new AbortController();
+    controller.abort();
+    const request: StartMessage = {
+      type: 'start',
+      key: '11'.repeat(32),
+      rules: ['ips'],
+      aggressive: false,
+      input: { kind: 'text', text: 'from 10.0.0.7', outputName: 'sanitized.txt' },
+      destination: { kind: 'memory' },
+    };
+    await expect(runSanitization(request, controller.signal, () => undefined)).rejects.toThrow();
   });
 });
