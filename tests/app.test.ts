@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { readFile } from 'node:fs/promises';
 import { sanitizeText } from '@socprime/logtotal-sanitizer';
 import { strictUtf8Source, runSanitization } from '../src/sanitization';
 import type { StartMessage, WritableFileHandleLike } from '../src/protocol';
@@ -253,5 +254,29 @@ describe('streaming sanitizer', () => {
     expect(secondResult.kind).toBe('disk');
     expect(secondClosed).toBe(true);
     expect(secondAborted).toBe(false);
+  });
+});
+
+describe('page shell', () => {
+  it('contains the privacy boundary and every workflow landmark', async () => {
+    const html = await readFile(new URL('../index.html', import.meta.url), 'utf8');
+    expect(html).toContain("connect-src 'none'");
+    for (const id of [
+      'file-input',
+      'paste-input',
+      'rules-grid',
+      'aggressive',
+      'sanitize',
+      'cancel',
+      'status',
+      'results',
+      'before-preview',
+      'after-preview',
+      'copy-result',
+      'download-result',
+      'clear-session',
+    ]) {
+      expect(html).toContain(`id="${id}"`);
+    }
   });
 });
