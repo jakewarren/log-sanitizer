@@ -123,6 +123,51 @@ describe('streaming sanitizer', () => {
     expect('replacements' in result.report).toBe(false);
   });
 
+  it('returns raw replacements when a recovery table is requested', async () => {
+    const request = {
+      type: 'start',
+      key: '11'.repeat(32),
+      rules: ['ips'],
+      aggressive: false,
+      includeLegend: true,
+      input: { kind: 'text', text: 'from 10.0.0.7 twice: 10.0.0.7', outputName: 'sanitized.txt' },
+      destination: { kind: 'memory' },
+    } as StartMessage;
+    const result = await runSanitization(request, new AbortController().signal, () => undefined);
+    if (result.kind !== 'text') throw new Error('Expected text result');
+    expect(result.report.replacements).toEqual([
+      expect.objectContaining({ ruleId: 'ips', original: '10.0.0.7', count: 2 }),
+    ]);
+  });
+
+  it('simplifies masked and pseudonymous categories without changing token-shaped input', async () => {
+    const request = {
+      type: 'start',
+      key: '11'.repeat(32),
+      rules: ['secrets', 'ips', 'users'],
+      aggressive: false,
+      simplifyReplacements: true,
+      includeLegend: true,
+      input: {
+        kind: 'text',
+        text: 'Authorization: Bearer abcdefghijklmnop\nuser=alice from 10.0.0.7\nliteral=<USER:0123456789abcdef>',
+        outputName: 'sanitized.txt',
+      },
+      destination: { kind: 'memory' },
+    } as StartMessage;
+    const result = await runSanitization(request, new AbortController().signal, () => undefined);
+    if (result.kind !== 'text') throw new Error('Expected text result');
+    expect(result.text).toBe(
+      'Authorization: Bearer <REDACTED SECRET>\nuser=<REDACTED USER> from <REDACTED IP>\nliteral=<USER:0123456789abcdef>',
+    );
+    expect(result.report.preview.after.map((segment) => segment.text).join('')).toBe(result.text);
+    expect(result.report.replacements?.map((entry) => entry.replacement)).toEqual([
+      '<REDACTED SECRET>',
+      '<REDACTED USER>',
+      '<REDACTED IP>',
+    ]);
+  });
+
   it('clamps each long single-line preview to UTF-8 bytes without splitting multibyte text', async () => {
     const request: StartMessage = {
       type: 'start',
@@ -364,6 +409,28 @@ describe('page shell', () => {
     expect(panel?.querySelector('#aggressive')).not.toBeNull();
   });
 
+  it('provides a collapsed recovery table with three export formats', async () => {
+    const html = await readFile(new URL('../index.html', import.meta.url), 'utf8');
+    const page = new Window();
+    page.document.write(html);
+
+    const panel = page.document.querySelector<HTMLDetailsElement>('#legend-panel');
+    expect(page.document.querySelector('#include-legend')).not.toBeNull();
+    expect(panel).not.toBeNull();
+    expect(panel?.open).toBe(false);
+    expect(panel?.textContent).toContain('sensitive');
+    expect(panel?.querySelectorAll('[data-legend-format]')).toHaveLength(3);
+  });
+
+  it('links bundled users to the third-party license terms', async () => {
+    const html = await readFile(new URL('../index.html', import.meta.url), 'utf8');
+    const page = new Window();
+    page.document.write(html);
+
+    const license = page.document.querySelector<HTMLAnchorElement>('[data-third-party-licenses]');
+    expect(license?.getAttribute('href')).toBe('./THIRD_PARTY_LICENSES.txt');
+  });
+
   it('keeps disclosure affordances out of accessible names', async () => {
     const html = await readFile(new URL('../index.html', import.meta.url), 'utf8');
     const page = new Window();
@@ -436,6 +503,51 @@ describe('DOM run lifecycle', () => {
     input.dispatchEvent(new appWindow.Event('change', { bubbles: true }));
   }
 
+  async function renderLegend(original = 'alice|ops\n"west"'): Promise<void> {
+    setFile();
+    click('sanitize');
+    await settle();
+    TestWorker.instances[0].emit({
+      type: 'complete',
+      result: {
+        kind: 'blob',
+        blob: new Blob(['done']),
+        fileName: 'sample.sanitized.log',
+        report: {
+          counts: { users: 2 },
+          totalMatches: 2,
+          lineCount: 1,
+          replacements: [{ ruleId: 'users', original, replacement: '<USER:abc123>', count: 2 }],
+          preview: { before: [], after: [] },
+        },
+      },
+    });
+    await settle();
+  }
+
+  async function captureLegendDownload(format: string): Promise<{ name: string; text: string }> {
+    let blob: Blob | undefined;
+    let name = '';
+    const createUrl = vi.spyOn(URL, 'createObjectURL').mockImplementation((value) => {
+      blob = value as Blob;
+      return 'blob:legend';
+    });
+    const revokeUrl = vi.spyOn(URL, 'revokeObjectURL').mockImplementation(() => undefined);
+    const anchorClick = vi.spyOn(appWindow.HTMLAnchorElement.prototype, 'click').mockImplementation(function (this: HTMLAnchorElement) {
+      name = this.download;
+    });
+    try {
+      appDocument.querySelector<HTMLElement>(`[data-legend-format="${format}"]`)
+        ?.dispatchEvent(new appWindow.Event('click', { bubbles: true }));
+      await settle();
+      return { name, text: blob ? await blob.text() : '' };
+    } finally {
+      createUrl.mockRestore();
+      revokeUrl.mockRestore();
+      anchorClick.mockRestore();
+    }
+  }
+
   beforeAll(async () => {
     appWindow = new Window({ url: 'http://localhost/' });
     const html = await readFile(new URL('../index.html', import.meta.url), 'utf8');
@@ -457,6 +569,149 @@ describe('DOM run lifecycle', () => {
     TestWorker.postFailures = 0;
     (appDocument.getElementById('paste-input') as HTMLTextAreaElement).value = '';
     click('clear-session');
+    (appDocument.getElementById('include-legend') as HTMLInputElement).checked = false;
+  });
+
+  it('requests replacement entries only when the recovery table is selected', async () => {
+    setFile();
+    (appDocument.getElementById('include-legend') as HTMLInputElement).checked = true;
+    click('sanitize');
+    await settle();
+    expect((TestWorker.instances[0].messages[0] as StartMessage).includeLegend).toBe(true);
+  });
+
+  it('requests simplified replacements only when the option is selected', async () => {
+    const option = appDocument.getElementById('simplify-replacements') as HTMLInputElement;
+    option.checked = true;
+    setFile();
+    click('sanitize');
+    await settle();
+    expect((TestWorker.instances[0].messages[0] as StartMessage).simplifyReplacements).toBe(true);
+  });
+
+  it('disables the recovery table while simplified replacements are selected', async () => {
+    const simplify = appDocument.getElementById('simplify-replacements') as HTMLInputElement;
+    const recovery = appDocument.getElementById('include-legend') as HTMLInputElement;
+    recovery.checked = true;
+    simplify.checked = true;
+    simplify.dispatchEvent(new appWindow.Event('change', { bubbles: true }));
+    expect(recovery.checked).toBe(false);
+    expect(recovery.disabled).toBe(true);
+
+    setFile();
+    click('sanitize');
+    await settle();
+    TestWorker.instances[0].emit(complete());
+    await settle();
+    expect(recovery.disabled).toBe(true);
+
+    simplify.checked = false;
+    simplify.dispatchEvent(new appWindow.Event('change', { bubbles: true }));
+    expect(recovery.disabled).toBe(false);
+  });
+
+  it('renders replacement entries in a collapsed recovery table', async () => {
+    setFile();
+    click('sanitize');
+    await settle();
+    TestWorker.instances[0].emit({
+      type: 'complete',
+      result: {
+        kind: 'blob',
+        blob: new Blob(['done']),
+        fileName: 'sample.sanitized.log',
+        report: {
+          counts: { ips: 2 },
+          totalMatches: 2,
+          lineCount: 1,
+          replacements: [{ ruleId: 'ips', original: '10.0.0.7', replacement: '<IP:abc123>', count: 2 }],
+          preview: { before: [], after: [] },
+        },
+      },
+    });
+    await settle();
+    const panel = appDocument.getElementById('legend-panel') as HTMLDetailsElement;
+    expect(panel.hidden).toBe(false);
+    expect(panel.open).toBe(false);
+    expect(Array.from(panel.querySelectorAll('tbody td')).map((cell) => cell.textContent)).toEqual([
+      RULES.find((rule) => rule.id === 'ips')!.label,
+      '<IP:abc123>',
+      '10.0.0.7',
+      '2',
+    ]);
+  });
+
+  it('limits the rendered recovery table without dropping export data', async () => {
+    setFile();
+    click('sanitize');
+    await settle();
+    const replacements = Array.from({ length: 501 }, (_, index) => ({
+      ruleId: 'users' as const,
+      original: `user-${index}`,
+      replacement: `<USER:${index}>`,
+      count: 1,
+    }));
+    TestWorker.instances[0].emit({
+      type: 'complete',
+      result: {
+        kind: 'blob',
+        blob: new Blob(['done']),
+        fileName: 'sample.sanitized.log',
+        report: { counts: { users: 501 }, totalMatches: 501, lineCount: 501, replacements, preview: { before: [], after: [] } },
+      },
+    });
+    await settle();
+    expect(appDocument.querySelectorAll('#legend-rows tr')).toHaveLength(500);
+    expect(appDocument.getElementById('legend-note')?.textContent).toBe('Showing the first 500 unique values. Downloads include all 501.');
+  });
+
+  it('rejects recovery-table collection for files over the in-memory limit', async () => {
+    const input = appDocument.getElementById('file-input') as HTMLInputElement;
+    const largeFile = { name: 'large.log', size: MEMORY_LIMIT_BYTES + 1 } as File;
+    Object.defineProperty(input, 'files', { configurable: true, value: [largeFile] });
+    input.dispatchEvent(new appWindow.Event('change', { bubbles: true }));
+    (appDocument.getElementById('include-legend') as HTMLInputElement).checked = true;
+    click('sanitize');
+    await settle();
+    expect((appDocument.getElementById('error') as HTMLElement).textContent).toContain('Recovery tables are available');
+    expect(TestWorker.instances).toHaveLength(0);
+  });
+
+  it('downloads a Markdown recovery table with safe table cells', async () => {
+    await renderLegend();
+    const download = await captureLegendDownload('markdown');
+    expect(download.name).toBe('redaction-legend.md');
+    expect(download.text).toBe([
+      '| Category | Redacted value | Original value | Occurrences |',
+      '| --- | --- | --- | ---: |',
+      '| Usernames &amp; emails | &lt;USER:abc123&gt; | alice\\|ops<br>"west" | 2 |',
+      '',
+    ].join('\n'));
+  });
+
+  it('downloads a CSV recovery table with quoted fields', async () => {
+    await renderLegend();
+    const download = await captureLegendDownload('csv');
+    expect(download.name).toBe('redaction-legend.csv');
+    expect(download.text).toBe('"Category","Redacted value","Original value","Occurrences"\r\n"Usernames & emails","<USER:abc123>","alice|ops\n""west""","2"\r\n');
+  });
+
+  it('neutralizes spreadsheet formulas in CSV original values', async () => {
+    await renderLegend('=HYPERLINK("https://example.test")');
+    const download = await captureLegendDownload('csv');
+    expect(download.text).toContain('"\'=HYPERLINK(""https://example.test"")"');
+  });
+
+  it('downloads a JSON recovery table with named columns', async () => {
+    await renderLegend();
+    const download = await captureLegendDownload('json');
+    expect(download.name).toBe('redaction-legend.json');
+    expect(JSON.parse(download.text)).toEqual([{
+      category: 'Usernames & emails',
+      redacted: '<USER:abc123>',
+      original: 'alice|ops\n"west"',
+      occurrences: 2,
+    }]);
   });
 
   it('retries a DataCloneError disk request through memory for a small file', async () => {

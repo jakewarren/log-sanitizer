@@ -1,6 +1,7 @@
 import type {
   BuiltinRuleId,
   RuleCounts,
+  SanitizeReplacement,
   SanitizeSegment,
 } from '@socprime/logtotal-sanitizer';
 
@@ -27,6 +28,8 @@ export interface StartMessage {
   key: string;
   rules: BuiltinRuleId[];
   aggressive: boolean;
+  simplifyReplacements?: boolean;
+  includeLegend?: boolean;
   input: SanitizerInput;
   destination: OutputDestination;
 }
@@ -39,6 +42,7 @@ export interface ReportSummary {
   counts: RuleCounts;
   totalMatches: number;
   lineCount: number;
+  replacements?: SanitizeReplacement[];
   preview: { before: SanitizeSegment[]; after: SanitizeSegment[] };
 }
 

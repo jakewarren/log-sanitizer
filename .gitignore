@@ -1,5 +1,8 @@
 .worktrees/
 .superpowers/
+.agents/
+.claude/
+skills-lock.json
 node_modules/
 dist/
 .DS_Store

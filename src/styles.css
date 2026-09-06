@@ -84,12 +84,13 @@ textarea { width: 100%; min-height: 17rem; resize: vertical; padding: 1rem; bord
 .section-heading { padding-block: 0.9rem 0.35rem; }
 .section-heading h2 { margin-bottom: 0; font-size: 1rem; }
 .rules-grid { display: grid; }
-.rule, .aggressive { display: flex; gap: 0.65rem; align-items: flex-start; }
+.rule, .aggressive, .recovery-option { display: flex; gap: 0.65rem; align-items: flex-start; }
 .rule { padding-block: 0.72rem; border-bottom: 1px solid var(--border); }
-.rule input, .aggressive input { flex: 0 0 auto; margin-top: 0.22rem; accent-color: var(--accent); }
-.rule strong, .aggressive strong { font-size: 0.88rem; }
-.rule small, .aggressive small { display: block; margin-top: 0.1rem; color: var(--muted); font-size: 0.75rem; line-height: 1.4; }
+.rule input, .aggressive input, .recovery-option input { flex: 0 0 auto; margin-top: 0.22rem; accent-color: var(--accent); }
+.rule strong, .aggressive strong, .recovery-option strong { font-size: 0.88rem; }
+.rule small, .aggressive small, .recovery-option small { display: block; margin-top: 0.1rem; color: var(--muted); font-size: 0.75rem; line-height: 1.4; }
 .aggressive { margin-top: 0.8rem; padding: 0.8rem; border: 1px solid color-mix(in srgb, var(--signal) 55%, var(--border)); border-radius: 0.5rem; background: color-mix(in srgb, var(--signal) 9%, var(--surface)); }
+.recovery-option { margin-bottom: 1rem; padding: 0.8rem; border: 1px solid var(--border); border-radius: 0.5rem; background: var(--surface-muted); }
 .primary, .secondary, .link-button { border-radius: 0.48rem; padding: 0.65rem 0.9rem; }
 .primary { color: white; background: var(--accent); border: 1px solid var(--accent); font-weight: 720; }
 .primary:hover { background: var(--accent-dark); }
@@ -114,6 +115,18 @@ progress { width: 100%; height: 0.55rem; margin-top: 1rem; accent-color: var(--a
 .preview-panel.after h3 { color: var(--accent); }
 pre { min-height: 12rem; max-height: 28rem; overflow: auto; margin: 0; padding: 1rem; border: 0; border-radius: 0; background: var(--code); color: var(--code-text); white-space: pre-wrap; overflow-wrap: anywhere; font-size: 0.82rem; line-height: 1.55; }
 pre mark { padding-inline: 0.1rem; border-radius: 0.15rem; background: var(--signal); color: #172026; }
+.legend-panel { margin-block: 1rem; border: 1px solid var(--border); border-radius: 0.65rem; }
+.legend-panel > summary { padding: 0.8rem 1rem; cursor: pointer; }
+.legend-panel > summary span { color: var(--muted); font-size: 0.85rem; }
+.legend-body { padding: 0 1rem 1rem; border-top: 1px solid var(--border); }
+.legend-warning { padding: 0.75rem; border-left: 3px solid var(--danger); background: color-mix(in srgb, var(--danger) 7%, var(--surface)); }
+.legend-table-wrap { max-height: 28rem; overflow: auto; border: 1px solid var(--border); border-radius: 0.45rem; }
+.legend-table-wrap table { width: 100%; border-collapse: collapse; font-size: 0.8rem; }
+.legend-table-wrap th, .legend-table-wrap td { padding: 0.55rem 0.65rem; border-bottom: 1px solid var(--border); text-align: left; vertical-align: top; overflow-wrap: anywhere; white-space: pre-wrap; }
+.legend-table-wrap th { position: sticky; top: 0; background: var(--surface-muted); }
+.legend-table-wrap td:nth-child(2), .legend-table-wrap td:nth-child(3) { font-family: ui-monospace, "SFMono-Regular", Consolas, monospace; }
+.legend-table-wrap th:last-child, .legend-table-wrap td:last-child { text-align: right; }
+.legend-body .run-actions { justify-content: flex-start; flex-wrap: wrap; margin-top: 1rem; }
 footer { display: flex; justify-content: space-between; gap: 1rem; padding-block: 1.25rem 2.5rem; color: var(--muted); font-size: 0.8rem; }
 footer a { color: var(--accent); }
 [hidden] { display: none !important; }

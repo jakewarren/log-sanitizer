@@ -90,6 +90,14 @@
               <p>Processing stays in this tab.</p>
             </div>
           </div>
+          <label class="recovery-option">
+            <input id="simplify-replacements" type="checkbox" aria-describedby="simplify-option-note">
+            <span><strong>Simplify replacements</strong><small id="simplify-option-note">Remove unique IDs from replacement markers, for example &lt;USER:…&gt; becomes &lt;REDACTED USER&gt;.</small></span>
+          </label>
+          <label class="recovery-option">
+            <input id="include-legend" type="checkbox" aria-describedby="legend-option-note">
+            <span><strong>Include recovery table</strong><small id="legend-option-note">Keep original values for local review and export. Available for inputs up to 50 MiB.</small></span>
+          </label>
           <div class="run-actions">
             <button id="sanitize" class="primary" type="button">Sanitize locally</button>
             <button id="cancel" class="secondary" type="button" hidden>Cancel</button>
@@ -116,6 +124,24 @@
           <div class="preview-panel after"><h3>After</h3><pre id="after-preview"></pre></div>
         </div>
         <p id="preview-note" class="hint"></p>
+        <details id="legend-panel" class="legend-panel" hidden>
+          <summary><strong>Recovery table</strong> <span id="legend-summary"></span></summary>
+          <div class="legend-body">
+            <p class="legend-warning"><strong>This table contains sensitive original values.</strong> Keep exports separate from sanitized logs.</p>
+            <p id="legend-note" class="hint"></p>
+            <div class="legend-table-wrap">
+              <table>
+                <thead><tr><th scope="col">Category</th><th scope="col">Redacted value</th><th scope="col">Original value</th><th scope="col">Occurrences</th></tr></thead>
+                <tbody id="legend-rows"></tbody>
+              </table>
+            </div>
+            <div class="run-actions" aria-label="Export recovery table">
+              <button class="secondary" type="button" data-legend-format="markdown">Download Markdown</button>
+              <button class="secondary" type="button" data-legend-format="csv">Download CSV</button>
+              <button class="secondary" type="button" data-legend-format="json">Download JSON</button>
+            </div>
+          </div>
+        </details>
         <div class="run-actions">
           <button id="copy-result" class="primary" type="button" hidden>Copy result</button>
           <button id="download-result" class="primary" type="button" hidden>Download result</button>
@@ -125,7 +151,7 @@
 
     <footer>
       <span>No uploads. No server.</span>
-      <span>Powered by <a href="https://github.com/socprime/logtotal-sanitizer" rel="noreferrer">SOC Prime LogTotal Sanitizer</a> (Apache-2.0).</span>
+      <span>Powered by <a href="https://github.com/socprime/logtotal-sanitizer" rel="noreferrer">SOC Prime LogTotal Sanitizer</a> · <a data-third-party-licenses href="./THIRD_PARTY_LICENSES.txt">Third-party licenses</a>.</span>
     </footer>
   </body>
 </html>

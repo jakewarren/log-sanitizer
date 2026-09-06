@@ -1,6 +1,9 @@
 import {
   createSanitizer,
+  generateKey,
+  getBuiltinRule,
   type SanitizeReport,
+  type SanitizeRule,
   type SanitizeSegment,
   type TextSink,
 } from '@socprime/logtotal-sanitizer';
@@ -100,15 +103,52 @@ function clampPreview(segments: readonly SanitizeSegment[]): SanitizeSegment[] {
   return limited;
 }
 
-function summarize(report: SanitizeReport): ReportSummary {
+function summarize(
+  report: SanitizeReport,
+  includeLegend: boolean,
+  simplify: (value: string) => string,
+): ReportSummary {
   return {
     counts: report.counts,
     totalMatches: report.totalMatches,
     lineCount: report.lineCount,
+    ...(includeLegend ? {
+      replacements: report.replacements.map((entry) => ({
+        ...entry,
+        replacement: simplify(entry.replacement),
+      })),
+    } : {}),
     preview: {
       before: clampPreview(report.preview.before),
-      after: clampPreview(report.preview.after),
+      after: clampPreview(report.preview.after.map((segment) => ({
+        ...segment,
+        text: simplify(segment.text),
+      }))),
     },
+  };
+}
+
+function simplifiedRules(ruleIds: StartMessage['rules']): {
+  rules: SanitizeRule[];
+  simplify: (value: string) => string;
+} {
+  const categories = new Map<string, string>();
+  const marker = generateKey().slice(0, 16).toUpperCase();
+  const rules = ruleIds.map((id, index) => {
+    const rule = getBuiltinRule(id)!;
+    const category = rule.token ?? id.toUpperCase();
+    const token = `LS${marker}${index}`;
+    categories.set(token, category.replace(/_/g, ' '));
+    return { ...rule, mode: 'pseudo' as const, token };
+  });
+  return {
+    rules,
+    simplify: (value) => value.replace(
+      /<([A-Z][A-Z0-9]*):[0-9a-f]{16}>/g,
+      (replacement, token: string) => categories.has(token)
+        ? `<REDACTED ${categories.get(token)}>`
+        : replacement,
+    ),
   };
 }
 
@@ -124,17 +164,20 @@ export async function runSanitization(
   const source = strictUtf8Source(blob, (value) => {
     bytesRead = value;
   }, CHUNK_BYTES, signal);
+  const simplified = message.simplifyReplacements
+    ? simplifiedRules(message.rules)
+    : { rules: message.rules, simplify: (value: string) => value };
   const sanitizer = createSanitizer({
     key: message.key,
     keyEncoding: 'hex',
-    rules: message.rules,
+    rules: simplified.rules,
     aggressive: message.aggressive,
-    report: { previewBytes: PREVIEW_BYTES, replacements: false, contextChars: 0 },
+    report: { previewBytes: PREVIEW_BYTES, replacements: message.includeLegend === true, contextChars: 0 },
   });
 
   let writable: WritableFileLike | undefined;
   const memory = message.destination.kind === 'memory' ? memorySink() : undefined;
-  const sink: TextSink = message.destination.kind === 'disk'
+  const outputSink: TextSink = message.destination.kind === 'disk'
     ? {
         async write(chunk) {
           if (!writable) throw new Error('Output file is not open.');
@@ -147,6 +190,16 @@ export async function runSanitization(
         },
       }
     : memory!.sink;
+  const sink: TextSink = message.simplifyReplacements
+    ? {
+        write(chunk) {
+          return outputSink.write(simplified.simplify(chunk));
+        },
+        close() {
+          return outputSink.close?.();
+        },
+      }
+    : outputSink;
 
   try {
     if (message.destination.kind === 'disk') {
@@ -156,7 +209,7 @@ export async function runSanitization(
       signal,
       onProgress: () => onProgress(bytesRead, blob.size),
     });
-    const summary = summarize(report);
+    const summary = summarize(report, message.includeLegend === true, simplified.simplify);
 
     if (message.destination.kind === 'disk') return { kind: 'disk', report: summary };
     if (message.input.kind === 'text') {

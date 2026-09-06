@@ -1,4 +1,4 @@
-import { PREVIEW_BYTES, RULES, getInputLimit, getOrCreateSessionKey, isProbablyBinary, limitPreviewSegments, orderRuleIds, outputFileName, replaceSessionKey, validateInputSize, type InputKind, type SessionKeyState } from './policy';
+import { MEMORY_LIMIT_BYTES, PREVIEW_BYTES, RULES, getInputLimit, getOrCreateSessionKey, isProbablyBinary, limitPreviewSegments, orderRuleIds, outputFileName, replaceSessionKey, validateInputSize, type InputKind, type SessionKeyState } from './policy';
 import type { CompleteResult, StartMessage, WorkerResponse, WritableFileHandleLike } from './protocol';
 
 type PickerOptions = { suggestedName?: string; types?: Array<{ description: string; accept: Record<string, string[]> }> };
@@ -16,6 +16,8 @@ const fileLimit = $('file-limit');
 const dropZone = $('drop-zone');
 const rulesGrid = $('rules-grid');
 const aggressive = $('aggressive') as HTMLInputElement;
+const simplifyReplacements = $('simplify-replacements') as HTMLInputElement;
+const includeLegend = $('include-legend') as HTMLInputElement;
 const sanitizeButton = $('sanitize') as HTMLButtonElement;
 const cancelButton = $('cancel') as HTMLButtonElement;
 const clearSessionButton = $('clear-session') as HTMLButtonElement;
@@ -32,11 +34,16 @@ const countsList = $('counts-list');
 const beforePreview = $('before-preview');
 const afterPreview = $('after-preview');
 const previewNote = $('preview-note');
+const legendPanel = $('legend-panel') as HTMLDetailsElement;
+const legendSummary = $('legend-summary');
+const legendNote = $('legend-note');
+const legendRows = $('legend-rows');
 const copyButton = $('copy-result') as HTMLButtonElement;
 const downloadButton = $('download-result') as HTMLButtonElement;
 const CANCEL_TIMEOUT_MS = 1500;
+const LEGEND_VISIBLE_ROWS = 500;
 const modeControls = [modeFile, modeText];
-const inputControls = [fileInput, pasteInput, aggressive];
+const inputControls = [fileInput, pasteInput, aggressive, simplifyReplacements, includeLegend];
 
 let selectedFile: File | null = null;
 let session: SessionKeyState;
@@ -132,6 +139,11 @@ function clearResult(): void {
   afterPreview.replaceChildren();
   countsList.replaceChildren();
   previewNote.textContent = '';
+  legendPanel.hidden = true;
+  legendPanel.open = false;
+  legendSummary.textContent = '';
+  legendNote.textContent = '';
+  legendRows.replaceChildren();
 }
 
 function hasResult(): boolean {
@@ -217,6 +229,25 @@ function renderResult(result: CompleteResult): void {
   previewNote.textContent = activeInputBytes > PREVIEW_BYTES || beforeLimited.truncated || afterLimited.truncated
     ? 'Preview limited to the first 256 KiB and 200 lines.'
     : 'Preview shows the bounded sample returned by the sanitizer.';
+  const replacements = report.replacements;
+  legendPanel.hidden = replacements === undefined;
+  if (replacements !== undefined) {
+    legendSummary.textContent = `(${replacements.length} unique ${replacements.length === 1 ? 'value' : 'values'})`;
+    const visible = replacements.slice(0, LEGEND_VISIBLE_ROWS);
+    legendRows.replaceChildren(...visible.map((entry) => {
+      const row = document.createElement('tr');
+      const label = RULES.find((rule) => rule.id === entry.ruleId)?.label ?? entry.ruleId;
+      for (const value of [label, entry.replacement, entry.original, String(entry.count)]) {
+        const cell = document.createElement('td');
+        cell.textContent = value;
+        row.append(cell);
+      }
+      return row;
+    }));
+    legendNote.textContent = replacements.length > LEGEND_VISIBLE_ROWS
+      ? `Showing the first ${LEGEND_VISIBLE_ROWS} unique values. Downloads include all ${replacements.length}.`
+      : 'Downloads include every unique value.';
+  }
   const isText = activeInputKind === 'text';
   copyButton.hidden = !isText;
   downloadButton.hidden = result.kind === 'disk';
@@ -257,12 +288,18 @@ function isDataCloneError(reason: unknown): boolean {
   return reason instanceof DOMException && reason.name === 'DataCloneError';
 }
 
+function updateRecoveryAvailability(): void {
+  includeLegend.disabled = simplifyReplacements.checked;
+  if (includeLegend.disabled) includeLegend.checked = false;
+}
+
 function setIdle(): void {
   sanitizeButton.disabled = false;
   cancelButton.hidden = true;
   cancelButton.disabled = false;
   modeControls.forEach((control) => { control.disabled = false; });
   inputControls.forEach((control) => { control.disabled = false; });
+  updateRecoveryAvailability();
   setRuleInputsDisabled(false);
   toggleRulesButton.disabled = false;
   progressWrapper.hidden = true;
@@ -443,6 +480,11 @@ async function sanitize(): Promise<void> {
   let textInputBytes = 0;
   if (kind === 'file') {
     const file = preflight.file!;
+    if (includeLegend.checked && file.size > MEMORY_LIMIT_BYTES) {
+      finishPreflight(preflight);
+      showError('Recovery tables are available for files up to 50 MiB. Clear the option to sanitize this larger file.');
+      return;
+    }
     const sizeError = validateInputSize(file.size, 'file', canStreamToDisk());
     if (sizeError) {
       finishPreflight(preflight);
@@ -515,7 +557,7 @@ async function sanitize(): Promise<void> {
   clearResult();
   activePreflight = undefined;
   setStatus('Starting local sanitization…');
-  sendStart({ type: 'start', key: session.key, rules, aggressive: aggressive.checked, input, destination }, activeInputBytes);
+  sendStart({ type: 'start', key: session.key, rules, aggressive: aggressive.checked, simplifyReplacements: simplifyReplacements.checked, includeLegend: includeLegend.checked, input, destination }, activeInputBytes);
 }
 
 function downloadResult(): void {
@@ -528,6 +570,68 @@ function downloadResult(): void {
   anchor.click();
   window.setTimeout(() => URL.revokeObjectURL(href), 0);
   setStatus('Sanitized result downloaded.');
+}
+
+type LegendFormat = 'markdown' | 'csv' | 'json';
+
+function legendData() {
+  return (currentResult?.report.replacements ?? []).map((entry) => ({
+    category: RULES.find((rule) => rule.id === entry.ruleId)?.label ?? entry.ruleId,
+    redacted: entry.replacement,
+    original: entry.original,
+    occurrences: entry.count,
+  }));
+}
+
+function markdownCell(value: string): string {
+  return value
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/\\/g, '\\\\')
+    .replace(/\|/g, '\\|')
+    .replace(/\r\n?|\n/g, '<br>');
+}
+
+function csvCell(value: string | number): string {
+  const text = String(value);
+  const safe = typeof value === 'string' && (/^[\t\r\n]/.test(text) || /^\s*[=+\-@]/.test(text))
+    ? `'${text}`
+    : text;
+  return `"${safe.replace(/"/g, '""')}"`;
+}
+
+function formatLegend(format: LegendFormat): { text: string; type: string; extension: string } {
+  const rows = legendData();
+  if (format === 'json') {
+    return { text: `${JSON.stringify(rows, null, 2)}\n`, type: 'application/json;charset=utf-8', extension: 'json' };
+  }
+  if (format === 'csv') {
+    const lines = [
+      ['Category', 'Redacted value', 'Original value', 'Occurrences'],
+      ...rows.map((row) => [row.category, row.redacted, row.original, row.occurrences]),
+    ];
+    return { text: `${lines.map((line) => line.map(csvCell).join(',')).join('\r\n')}\r\n`, type: 'text/csv;charset=utf-8', extension: 'csv' };
+  }
+  const lines = [
+    '| Category | Redacted value | Original value | Occurrences |',
+    '| --- | --- | --- | ---: |',
+    ...rows.map((row) => `| ${markdownCell(row.category)} | ${markdownCell(row.redacted)} | ${markdownCell(row.original)} | ${row.occurrences} |`),
+    '',
+  ];
+  return { text: lines.join('\n'), type: 'text/markdown;charset=utf-8', extension: 'md' };
+}
+
+function downloadLegend(format: LegendFormat): void {
+  if (currentResult?.report.replacements === undefined) return;
+  const output = formatLegend(format);
+  const href = URL.createObjectURL(new Blob([output.text], { type: output.type }));
+  const anchor = document.createElement('a');
+  anchor.href = href;
+  anchor.download = `redaction-legend.${output.extension}`;
+  anchor.click();
+  window.setTimeout(() => URL.revokeObjectURL(href), 0);
+  setStatus(`Recovery table downloaded as ${format === 'markdown' ? 'Markdown' : format.toUpperCase()}.`);
 }
 
 async function copyResult(): Promise<void> {
@@ -553,6 +657,9 @@ function clearSession(): void {
   pasteValue = '';
   fileName.textContent = '';
   aggressive.checked = false;
+  simplifyReplacements.checked = false;
+  includeLegend.checked = false;
+  updateRecoveryAvailability();
   ruleInputs().forEach((input) => { input.checked = true; });
   updateToggleLabel();
   modeFile.checked = true;
@@ -616,10 +723,14 @@ toggleRulesButton.addEventListener('click', () => {
   ruleInputs().forEach((input) => { input.checked = select; });
   updateToggleLabel();
 });
+simplifyReplacements.addEventListener('change', updateRecoveryAvailability);
 sanitizeButton.addEventListener('click', () => { void sanitize(); });
 cancelButton.addEventListener('click', cancelRun);
 copyButton.addEventListener('click', () => { void copyResult(); });
 downloadButton.addEventListener('click', downloadResult);
+document.querySelectorAll<HTMLButtonElement>('[data-legend-format]').forEach((button) => {
+  button.addEventListener('click', () => downloadLegend(button.dataset.legendFormat as LegendFormat));
+});
 clearSessionButton.addEventListener('click', clearSession);
 
 renderRules();
