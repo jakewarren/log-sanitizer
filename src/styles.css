@@ -28,7 +28,19 @@ button { cursor: pointer; }
 button:disabled { cursor: not-allowed; opacity: 0.55; }
 button:focus-visible, input:focus-visible, textarea:focus-visible, summary:focus-visible, a:focus-visible { outline: 3px solid var(--focus); outline-offset: 3px; }
 .site-header, .app-shell, footer { width: min(1180px, calc(100% - 2.5rem)); margin-inline: auto; }
-.site-header { display: flex; justify-content: space-between; gap: 2rem; align-items: center; padding-block: 2.1rem 1.6rem; }
+.site-header { display: flex; justify-content: space-between; gap: 2rem; align-items: center; padding: 2.1rem 4.5rem 1.6rem 0; }
+.github-corner { position: absolute; z-index: 3; top: 4px; right: 0; width: 4.5rem; height: 4.5rem; }
+.github-corner svg { display: block; width: 100%; height: 100%; }
+.github-corner-background { fill: var(--ink); }
+.octo-arm, .octo-body { fill: var(--canvas); }
+.octo-arm { transform-origin: 130px 106px; }
+.github-corner:hover .octo-arm, .github-corner:focus-visible .octo-arm { animation: octocat-wave 560ms ease-in-out; }
+.github-corner:focus-visible { outline-offset: -4px; }
+@keyframes octocat-wave {
+  0%, 100% { transform: rotate(0); }
+  20%, 60% { transform: rotate(-25deg); }
+  40%, 80% { transform: rotate(10deg); }
+}
 .brand { display: flex; align-items: center; gap: 0.9rem; }
 .brand-mark { display: grid; align-content: center; gap: 5px; width: 2.8rem; height: 2.8rem; padding: 0.65rem; border: 1px solid var(--border-strong); border-radius: 0.65rem; background: var(--surface); }
 .brand-mark span { display: block; height: 3px; border-radius: 2px; background: var(--ink); }
@@ -138,7 +150,8 @@ footer a { color: var(--accent); }
 @media (max-width: 640px) {
   .site-header, .header-actions, .results-heading, footer { align-items: stretch; flex-direction: column; }
   .site-header, .app-shell, footer { width: min(100% - 1.25rem, 1180px); }
-  .site-header { gap: 1.1rem; padding-block: 1.35rem 1rem; }
+  .site-header { gap: 1.1rem; padding: 1.35rem 3.5rem 1rem 0; }
+  .github-corner { width: 3.5rem; height: 3.5rem; }
   .header-actions { gap: 0.6rem; }
   .privacy-disclosure p { right: auto; left: 0; }
   .source-panel, .results-panel { padding: 1.15rem; }
@@ -149,6 +162,7 @@ footer a { color: var(--accent); }
 }
 @media (prefers-reduced-motion: reduce) {
   .drop-zone { transition: none; }
+  .github-corner:hover .octo-arm, .github-corner:focus-visible .octo-arm { animation: none; }
 }
 @media (prefers-color-scheme: dark) {
   :root {

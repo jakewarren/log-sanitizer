@@ -375,6 +375,16 @@ describe('streaming sanitizer', () => {
 });
 
 describe('page shell', () => {
+  it('provides an accessible GitHub corner linking to the source repository', async () => {
+    const html = await readFile(new URL('../index.html', import.meta.url), 'utf8');
+    const page = new Window();
+    page.document.write(html);
+
+    const corner = page.document.querySelector<HTMLAnchorElement>('.github-corner');
+    expect(corner?.getAttribute('href')).toBe('https://github.com/jakewarren/log-sanitizer');
+    expect(corner?.getAttribute('aria-label')).toBe('View source on GitHub');
+  });
+
   it('contains the privacy boundary and every workflow landmark', async () => {
     const html = await readFile(new URL('../index.html', import.meta.url), 'utf8');
     expect(html).toContain("connect-src 'none'");
