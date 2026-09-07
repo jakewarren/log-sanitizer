@@ -385,6 +385,16 @@ describe('page shell', () => {
     expect(corner?.getAttribute('aria-label')).toBe('View source on GitHub');
   });
 
+  it('keeps the sharing disclaimer available as an accessible note', async () => {
+    const html = await readFile(new URL('../index.html', import.meta.url), 'utf8');
+    const page = new Window();
+    page.document.write(html);
+
+    const disclaimer = page.document.querySelector<HTMLElement>('[role="note"]');
+    expect(disclaimer).not.toBeNull();
+    expect(disclaimer?.textContent ?? '').toContain('You are responsible for reviewing the output');
+  });
+
   it('contains the privacy boundary and every workflow landmark', async () => {
     const html = await readFile(new URL('../index.html', import.meta.url), 'utf8');
     expect(html).toContain("connect-src 'none'");

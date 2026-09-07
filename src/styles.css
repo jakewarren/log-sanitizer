@@ -27,7 +27,7 @@ button, input, textarea { font: inherit; }
 button { cursor: pointer; }
 button:disabled { cursor: not-allowed; opacity: 0.55; }
 button:focus-visible, input:focus-visible, textarea:focus-visible, summary:focus-visible, a:focus-visible { outline: 3px solid var(--focus); outline-offset: 3px; }
-.site-header, .app-shell, footer { width: min(1180px, calc(100% - 2.5rem)); margin-inline: auto; }
+.site-header, .app-shell, .disclaimer, footer { width: min(1180px, calc(100% - 2.5rem)); margin-inline: auto; }
 .site-header { display: flex; justify-content: space-between; gap: 2rem; align-items: center; padding: 2.1rem 4.5rem 1.6rem 0; }
 .github-corner { position: absolute; z-index: 3; top: 4px; right: 0; width: 4.5rem; height: 4.5rem; }
 .github-corner svg { display: block; width: 100%; height: 100%; }
@@ -139,6 +139,9 @@ pre mark { padding-inline: 0.1rem; border-radius: 0.15rem; background: var(--sig
 .legend-table-wrap td:nth-child(2), .legend-table-wrap td:nth-child(3) { font-family: ui-monospace, "SFMono-Regular", Consolas, monospace; }
 .legend-table-wrap th:last-child, .legend-table-wrap td:last-child { text-align: right; }
 .legend-body .run-actions { justify-content: flex-start; flex-wrap: wrap; margin-top: 1rem; }
+.disclaimer { margin-top: 1.25rem; padding: 0.8rem 1rem; border-left: 3px solid var(--signal); color: var(--muted); background: color-mix(in srgb, var(--signal) 7%, var(--canvas)); font-size: 0.85rem; }
+.disclaimer p { margin: 0; }
+.disclaimer strong { color: var(--ink); }
 footer { display: flex; justify-content: space-between; gap: 1rem; padding-block: 1.25rem 2.5rem; color: var(--muted); font-size: 0.8rem; }
 footer a { color: var(--accent); }
 [hidden] { display: none !important; }
@@ -149,7 +152,7 @@ footer a { color: var(--accent); }
 }
 @media (max-width: 640px) {
   .site-header, .header-actions, .results-heading, footer { align-items: stretch; flex-direction: column; }
-  .site-header, .app-shell, footer { width: min(100% - 1.25rem, 1180px); }
+  .site-header, .app-shell, .disclaimer, footer { width: min(100% - 1.25rem, 1180px); }
   .site-header { gap: 1.1rem; padding: 1.35rem 3.5rem 1rem 0; }
   .github-corner { width: 3.5rem; height: 3.5rem; }
   .header-actions { gap: 0.6rem; }

@@ -35,6 +35,9 @@ bun run build
 
 The Content Security Policy blocks Vite's hot-reload WebSocket. Refresh manually during local development.
 
+## Disclaimer
+
+This tool is provided “as is,” without warranty of any kind. Sanitization may be incomplete or inaccurate. You are responsible for reviewing the output and confirming that all sensitive information has been removed before sharing or distributing it.
 
 ## License and attribution
 
